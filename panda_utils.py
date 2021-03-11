@@ -13,8 +13,26 @@ CATEGORY = {
     'visible body': 1,
     'full body': 2,
     'head': 3,
-    'vehicle': 4
+    'vehicle': 4,
+    'person group': 5,
+    'vehicle group': 6
 }
+
+
+RED = (0, 0, 255)
+GREEN = (0, 255, 0)
+BLUE = (255, 0, 0)
+CYAN = (255, 255, 0)
+YELLOW = (0, 255, 255)
+ORANGE = (0, 165, 255)
+PURPLE = (255, 0, 255)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+
+def get_color(idx):
+    color_pool = [RED, GREEN, BLUE, CYAN, YELLOW, ORANGE, PURPLE, WHITE]
+    color = color_pool[idx % 8]
+    return color
 
 
 def custombasename(fullname):
@@ -577,6 +595,128 @@ def generate_coco_anno_vehicle(vehiclesrcfile, tgtfile, keywords=None):
     with open(tgtfile, "w") as f:
         f.write(jsonString)
 
+    return imageids
+
+
+def generate_coco_anno_person_group(pgroupsrcfile, tgtfile, keywords=None):
+    attrDict = dict()
+    attrDict["categories"] = [
+        {"supercategory": "none", "id": 5, "name": 'person group'}
+    ]
+    with open(pgroupsrcfile, 'r') as load_f:
+        person_group_anno_dict = json.load(load_f)
+
+    images = list()
+    annotations = list()
+    imageids = list()
+
+    objid = 1
+    for (imagename, imagedict) in person_group_anno_dict.items():
+        if keywords:
+            flag = False
+            for kw in keywords:
+                if kw in imagename:
+                    flag = True
+            if not flag:
+                continue
+        image = dict()
+        image['file_name'] = imagename
+        imgid = imagedict['image id']
+        imageids.append(imgid)
+        imgwidth = imagedict['image size']['width']
+        imgheight = imagedict['image size']['height']
+        image['height'] = imgheight
+        image['width'] = imgwidth
+        image['id'] = imgid
+        images.append(image)
+
+        for objdict in imagedict['objects list']:
+            cate = objdict['category']
+            if cate in ['person group']:
+                annotation = dict()
+                rect = objdict['rect']
+                annotation["image_id"] = imgid
+                annotation["iscrowd"] = 1
+                annotation["ignore"] = 1
+                x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
+                annotation["bbox"] = [x, y, w, h]
+                annotation["area"] = float(w * h)
+                annotation["category_id"] = CATEGORY['person group']
+                annotation["id"] = objid
+                objid += 1
+                annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]
+                annotations.append(annotation)
+
+    attrDict["images"] = images
+    attrDict["annotations"] = annotations
+    attrDict["type"] = "instances"
+    
+    # print attrDict
+    jsonString = json.dumps(attrDict, indent=2)
+    with open(tgtfile, "w") as f:
+        f.write(jsonString)
+    
+    return imageids
+
+
+def generate_coco_anno_vehicle_group(vgroupsrcfile, tgtfile, keywords=None):
+    attrDict = dict()
+    attrDict["categories"] = [
+        {"supercategory": "none", "id": 6, "name": 'vehicle group'}
+    ]
+    with open(vgroupsrcfile, 'r') as load_f:
+        vehicle_group_anno_dict = json.load(load_f)
+
+    images = list()
+    annotations = list()
+    imageids = list()
+
+    objid = 1
+    for (imagename, imagedict) in vehicle_group_anno_dict.items():
+        if keywords:
+            flag = False
+            for kw in keywords:
+                if kw in imagename:
+                    flag = True
+            if not flag:
+                continue
+        image = dict()
+        image['file_name'] = imagename
+        imgid = imagedict['image id']
+        imageids.append(imgid)
+        imgwidth = imagedict['image size']['width']
+        imgheight = imagedict['image size']['height']
+        image['height'] = imgheight
+        image['width'] = imgwidth
+        image['id'] = imgid
+        images.append(image)
+
+        for objdict in imagedict['objects list']:
+            cate = objdict['category']
+            if cate in ['vehicle group']:
+                annotation = dict()
+                rect = objdict['rect']
+                annotation["image_id"] = imgid
+                annotation["iscrowd"] = 1
+                annotation["ignore"] = 1
+                x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
+                annotation["bbox"] = [x, y, w, h]
+                annotation["area"] = float(w * h)
+                annotation["category_id"] = CATEGORY['vehicle group']
+                annotation["id"] = objid
+                objid += 1
+                annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]
+                annotations.append(annotation)
+
+    attrDict["images"] = images
+    attrDict["annotations"] = annotations
+    attrDict["type"] = "instances"
+    
+    # print attrDict
+    jsonString = json.dumps(attrDict, indent=2)
+    with open(tgtfile, "w") as f:
+        f.write(jsonString)
+    
     return imageids
 
     

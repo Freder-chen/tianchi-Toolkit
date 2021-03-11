@@ -11,6 +11,10 @@ import copy
 from collections import defaultdict
 from random import random
 
+import numpy as np
+from scipy.cluster.hierarchy import fcluster
+from scipy.cluster.hierarchy import dendrogram, linkage
+
 
 class ImgSplit():
     def __init__(self,
@@ -20,12 +24,13 @@ class ImgSplit():
                  outpath,
                  outannofile,
                  code='utf-8',
-                 gap=100,
                  subwidth=2048,
                  subheight=1024,
-                 multi=1,
                  thresh=0.8,
-                 outext='.jpg'
+                 outext='.jpg',
+                 imagepath='image_train',
+                 annopath='image_annos',
+                 gap=100,
                  ):
         """
         :param basepath: base directory for panda image data and annotations
@@ -40,7 +45,6 @@ class ImgSplit():
         :param thresh: the square thresh determine whether to keep the instance which is cut in the process of split
         :param outext: ext for the output image format
         """
-        self.multi = multi
         self.basepath = basepath
         self.annofile = annofile
         self.annomode = annomode
@@ -53,10 +57,10 @@ class ImgSplit():
         self.slidewidth = self.subwidth - self.gap
         self.slideheight = self.subheight - self.gap
         self.thresh = thresh
-        self.imagepath = os.path.join(self.basepath, 'image_train')
-        self.annopath = os.path.join(self.basepath, 'image_annos', annofile)
-        self.outimagepath = os.path.join(self.outpath, 'image_train')
-        self.outannopath = os.path.join(self.outpath, 'image_annos')
+        self.imagepath = os.path.join(self.basepath, imagepath)
+        self.annopath = os.path.join(self.basepath, annopath, annofile)
+        self.outimagepath = os.path.join(self.outpath, imagepath)
+        self.outannopath = os.path.join(self.outpath, annopath)
         self.outext = outext
         if not os.path.exists(self.outimagepath):
             os.makedirs(self.outimagepath)
@@ -141,108 +145,43 @@ class ImgSplit():
         outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale) + '__'
         subimageannos = {}
 
-        # split by object
-        objmodelist = objlist
-        if self.annomode == 'person':
-            objmodelist = [obj for obj in objlist if obj['category'] == 'person']
-
-        for object_dict in objmodelist:
-            # find img with obj
-            rectdict = object_dict['rects']['full body'] if self.annomode == 'person' else object_dict['rect']
-            xmin, ymin = int(rectdict['tl']['x'] * imgwidth), int(rectdict['tl']['y'] * imgheight)
-            xmax, ymax = int(rectdict['br']['x'] * imgwidth), int(rectdict['br']['y'] * imgheight)
-            width, height = xmax - xmin, ymax - ymin
-
-            # ramdon find img
-            left = max(int(xmin - self.multi * random() * width), 0)
-            right = min(int(xmax + self.multi * random() * width), imgwidth - 1)
-            up = max(int(ymin - self.multi * random() * height), 0)
-            down = min(int(ymax + self.multi * random() * height), imgheight - 1)
-
-            # rescale img
-            rewidth, reheight = right - left, down - up
-            if rewidth / reheight > self.subwidth / self.subheight:
-                _reheight = rewidth * self.subheight / self.subwidth
-                _rand_u = (_reheight - reheight) * random()
-                _rand_d = (_reheight - reheight) - _rand_u
-
-                if down + _rand_d > imgheight - 1:
-                    down = imgheight - 1
-                    up = max(down - _reheight, 0)
-                elif up - _rand_u < 0:
-                    up = 0
-                    down = min(_reheight, imgheight - 1)
+        left, up = 0, 0
+        while left < imgwidth:
+            if left + self.subwidth >= imgwidth:
+                left = max(imgwidth - self.subwidth, 0)
+            up = 0
+            while up < imgheight:
+                if up + self.subheight >= imgheight:
+                    up = max(imgheight - self.subheight, 0)
+                right = min(left + self.subwidth, imgwidth - 1)
+                down = min(up + self.subheight, imgheight - 1)
+                coordinates = left, up, right, down
+                subimgname = outbasename + str(left) + '__' + str(up) + self.outext
+                self.savesubimage(resizeimg, subimgname, coordinates)
+                # split annotations according to annotation mode
+                if self.annomode == 'person':
+                    newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+                elif self.annomode == 'vehicle':
+                    newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+                elif self.annomode == 'headbbox':
+                    newobjlist = self.headbboxAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+                elif self.annomode == 'headpoint':
+                    newobjlist = self.headpointAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+                subimageannos[subimgname] = {
+                    "image size": {
+                        "height": down - up + 1,
+                        "width": right - left + 1
+                    },
+                    "objects list": newobjlist
+                }
+                if up + self.subheight >= imgheight:
+                    break
                 else:
-                    up -= _rand_u
-                    down += _rand_d
+                    up = up + self.slideheight
+            if left + self.subwidth >= imgwidth:
+                break
             else:
-                _rewidth = reheight * self.subwidth / self.subheight
-                _rand_l = (_rewidth - rewidth) * random()
-                _rand_r = (_rewidth - rewidth) - _rand_l
-
-                if right + _rand_r > imgwidth - 1:
-                    right = imgheight - 1
-                    left = max(right - _rewidth, 0)
-                elif left - _rand_l < 0:
-                    left = 0
-                    right = min(_rewidth, imgwidth - 1)
-                else:
-                    right += _rand_r
-                    left -= _rand_l
-            
-            left, up, right, down = int(left), int(up), int(right), int(down)
-            coordinates = left, up, right, down
-
-            subimgname = outbasename + str(left) + '__' + str(up) + self.outext
-            self.savesubimage(resizeimg, subimgname, coordinates)
-
-            # split annotations according to annotation mod            
-            newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-            subimageannos[subimgname] = {
-                "image size": {
-                    "height": down - up + 1,
-                    "width": right - left + 1
-                },
-                "objects list": newobjlist
-            }
-
-        # left, up = 0, 0
-        # while left < imgwidth:
-        #     if left + self.subwidth >= imgwidth:
-        #         left = max(imgwidth - self.subwidth, 0)
-        #     up = 0
-        #     while up < imgheight:
-        #         if up + self.subheight >= imgheight:
-        #             up = max(imgheight - self.subheight, 0)
-        #         right = min(left + self.subwidth, imgwidth - 1)
-        #         down = min(up + self.subheight, imgheight - 1)
-        #         coordinates = left, up, right, down
-        #         subimgname = outbasename + str(left) + '__' + str(up) + self.outext
-        #         self.savesubimage(resizeimg, subimgname, coordinates)
-        #         # split annotations according to annotation mode
-        #         if self.annomode == 'person':
-        #             newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-        #         elif self.annomode == 'vehicle':
-        #             newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-        #         elif self.annomode == 'headbbox':
-        #             newobjlist = self.headbboxAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-        #         elif self.annomode == 'headpoint':
-        #             newobjlist = self.headpointAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-        #         subimageannos[subimgname] = {
-        #             "image size": {
-        #                 "height": down - up + 1,
-        #                 "width": right - left + 1
-        #             },
-        #             "objects list": newobjlist
-        #         }
-        #         if up + self.subheight >= imgheight:
-        #             break
-        #         else:
-        #             up = up + self.slideheight
-        #     if left + self.subwidth >= imgwidth:
-        #         break
-        #     else:
-        #         left = left + self.slidewidth
+                left = left + self.slidewidth
 
         return subimageannos
 
@@ -370,12 +309,346 @@ class ImgSplit():
                 })
         return newobjlist
 
-    def savesubimage(self, img, subimgname, coordinates):
+    def savesubimage(self, img, subimgname, coordinates=None):
         try:
-            left, up, right, down = coordinates
-            subimg = copy.deepcopy(img[up: down, left: right])
+            if coordinates:
+                left, up, right, down = coordinates
+                subimg = copy.deepcopy(img[up: down, left: right])
+            else:
+                subimg = img
             outdir = os.path.join(self.outimagepath, subimgname)
             cv2.imwrite(outdir, subimg)
         except Exception:
             print(coordinates)
             raise
+
+
+
+class DetectionModelImgSplit(ImgSplit):
+    def __init__(self,
+                 basepath,
+                 annofile,
+                 annomode,
+                 outpath,
+                 outannofile,
+                 code='utf-8',
+                 subwidth=2048,
+                 subheight=1024,
+                 multi=1,
+                 thresh=0.8,
+                 outext='.jpg',
+                 imagepath='image_train',
+                 annopath='image_annos',
+                 outtotalpath=None
+                 ):
+        """
+        :param basepath: base directory for panda image data and annotations
+        :param annofile: annotation file path
+        :param annomode:the type of annotation, which can be 'person', 'vehicle', 'headbbox' or 'headpoint'
+        :param outpath: output base path for panda data
+        :param outannofile: output file path for annotation
+        :param code: encodeing format of txt file
+        :param gap: overlap between two patches
+        :param subwidth: sub-width of patch
+        :param subheight: sub-height of patch
+        :param thresh: the square thresh determine whether to keep the instance which is cut in the process of split
+        :param outext: ext for the output image format
+        """
+        super(DetectionModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, thresh=thresh, outext=outext, imagepath=imagepath, annopath=annopath)
+        self.multi = multi
+
+    def SplitSingle(self, imgname, scale):
+        """
+        split a single image and ground truth
+        :param imgname: image name
+        :param scale: the resize scale for the image
+        :return:
+        """
+        imgpath = os.path.join(self.imagepath, imgname)
+        img = self.loadImg(imgpath)
+        if img is None: return
+        imagedict = self.annos[imgname]
+        objlist = imagedict['objects list']
+
+        # re-scale image if scale != 1
+        if scale != 1:
+            resizeimg = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        else:
+            resizeimg = img
+        imgheight, imgwidth = resizeimg.shape[:2]
+
+        # split image and annotation in sliding window manner
+        outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale) + '__'
+        subimageannos = {}
+
+        # split by object
+        objmodelist = objlist
+        if self.annomode == 'person':
+            objmodelist = [obj for obj in objlist if obj['category'] == 'person']
+
+        for object_dict in objmodelist:
+            # find img with obj
+            rectdict = object_dict['rects']['full body'] if self.annomode == 'person' else object_dict['rect']
+            xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
+            xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
+            width, height = xmax - xmin, ymax - ymin
+
+            # ramdon find img
+            left = max(int(xmin - self.multi * random() * width), 0)
+            right = min(int(xmax + self.multi * random() * width), imgwidth - 1)
+            up = max(int(ymin - self.multi * random() * height), 0)
+            down = min(int(ymax + self.multi * random() * height), imgheight - 1)
+
+            # rescale img
+            rewidth, reheight = right - left, down - up
+            if rewidth / reheight > self.subwidth / self.subheight:
+                _reheight = rewidth * self.subheight / self.subwidth
+                _rand_u = (_reheight - reheight) * random()
+                _rand_d = (_reheight - reheight) - _rand_u
+
+                if down + _rand_d > imgheight - 1:
+                    down = imgheight - 1
+                    up = max(down - _reheight, 0)
+                elif up - _rand_u < 0:
+                    up = 0
+                    down = min(_reheight, imgheight - 1)
+                else:
+                    up -= _rand_u
+                    down += _rand_d
+            else:
+                _rewidth = reheight * self.subwidth / self.subheight
+                _rand_l = (_rewidth - rewidth) * random()
+                _rand_r = (_rewidth - rewidth) - _rand_l
+
+                if right + _rand_r > imgwidth - 1:
+                    right = imgheight - 1
+                    left = max(right - _rewidth, 0)
+                elif left - _rand_l < 0:
+                    left = 0
+                    right = min(_rewidth, imgwidth - 1)
+                else:
+                    right += _rand_r
+                    left -= _rand_l
+            
+            left, up, right, down = int(left), int(up), int(right), int(down)
+            coordinates = left, up, right, down
+
+            subimgname = outbasename + str(left) + '__' + str(up) + self.outext
+            self.savesubimage(resizeimg, subimgname, coordinates)
+
+            # split annotations according to annotation mod
+            if self.annomode == 'person':
+                newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+            elif self.annomode == 'vehicle':
+                newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+            subimageannos[subimgname] = {
+                "image size": {
+                    "height": down - up + 1,
+                    "width": right - left + 1,
+                },
+                "objects list": newobjlist,
+            }
+        return subimageannos
+
+
+class ScaleModelImgSplit(ImgSplit):
+    def __init__(self,
+                 basepath,
+                 annofile,
+                 annomode,
+                 outpath,
+                 outannofile,
+                 code='utf-8',
+                 subwidth=2048,
+                 subheight=1024,
+                 multi=1,
+                 thresh=0.8,
+                 outext='.jpg',
+                 imagepath='image_train',
+                 annopath='image_annos',
+                 outtotalpath=None
+                 ):
+        """
+        :param basepath: base directory for panda image data and annotations
+        :param annofile: annotation file path
+        :param annomode:the type of annotation, which can be 'person', 'vehicle', 'headbbox' or 'headpoint'
+        :param outpath: output base path for panda data
+        :param outannofile: output file path for annotation
+        :param code: encodeing format of txt file
+        :param gap: overlap between two patches
+        :param subwidth: sub-width of patch
+        :param subheight: sub-height of patch
+        :param thresh: the square thresh determine whether to keep the instance which is cut in the process of split
+        :param outext: ext for the output image format
+        """
+        super(ScaleModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, multi, thresh, outext, imagepath, annopath)
+        # self.out_total_imgpath = os.path.join(self.outpath, f'{annomode}_total_image')
+        # if not os.path.exists(self.out_total_imgpath):
+        #     os.makedirs(self.out_total_imgpath)
+
+    def SplitSingle(self, imgname, scale=1):
+        """
+        split a single image and ground truth
+        :param imgname: image name
+        :param scale: the resize scale for the image
+        :return:
+        """
+        imgpath = os.path.join(self.imagepath, imgname)
+        img = self.loadImg(imgpath)
+        if img is None: return
+        imagedict = self.annos[imgname]
+        objlist = imagedict['objects list']
+        # re-scale image if scale != 1
+        resizeimg = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC) if scale != 1 else img
+        imgheight, imgwidth = resizeimg.shape[:2]
+        # split image and annotation in sliding window manner
+        outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale)
+        
+        # split by object
+        objmodelist = objlist
+        if self.annomode == 'person group':
+            objmodelist = [obj for obj in objlist if obj['category'] == 'person']
+        if self.annomode == 'vehicle group':
+            _L_ = ['motorcycle', 'midsize car', 'bicycle', 'tricycle', 'small car', 'vehicles', 'baby carriage', 'large car', 'electric car']
+            objmodelist = [obj for obj in objlist if obj['category'] in _L_]
+        # point clustering
+        gap = 100; max_dist = 2000
+        points = np.empty(shape=(0,2))
+        for object_dict in objmodelist:
+            rectdict = object_dict['rects']['full body'] if self.annomode == 'person group' else object_dict['rect']
+            xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
+            xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
+            if xmin >= xmax or ymin >= ymax:
+                print('object error:', xmin, ymin, xmax, ymax)
+                continue
+            points = np.append(points, [[x, y] for x in range(xmin, xmax + 1, gap) for y in range(ymin, ymax + 1, gap)], axis=0)
+        Z = linkage(points, 'ward')
+        labels = np.array(fcluster(Z, max_dist, criterion='distance'))
+        point_clus = {l: points[np.where(labels == l)] for l in np.unique(labels)}
+
+        # generate boxes
+        boxes = {}
+        for k, v in point_clus.items():
+            xmin, ymin = np.amin(v[:, 0]), np.amin(v[:, 1])
+            xmax, ymax = np.amax(v[:, 0]), np.amax(v[:, 1])
+            boxes[k] = int(xmin), int(ymin), min(int(xmax + gap), imgwidth - 1), min(int(ymax + gap), imgheight - 1)
+        trans = True
+        while trans:
+            trans = False
+            newboxes = {}
+            while len(boxes):
+                k, v = boxes.popitem()
+                _v = max(v[0] - gap, 0), max(v[1] - gap, 0), min(v[2] + gap, imgwidth - 1), min(v[3] + gap, imgheight - 1)
+                merge_bi = [i for i, j in boxes.items() if self.get_iou(_v, j) > 0.]
+                if len(merge_bi) != 0:
+                    trans = True
+                    merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(v)])
+                    xmin, ymin = np.amin(merge_boxes[:, 0]), np.amin(merge_boxes[:, 1])
+                    xmax, ymax = np.amax(merge_boxes[:, 2]), np.amax(merge_boxes[:, 3])
+                    v = xmin, ymin, xmax, ymax
+                    while len(merge_bi): boxes.pop(merge_bi.pop())
+                newboxes[k] = v
+            boxes = newboxes
+        
+        subimgname = outbasename + self.outext
+        self.savesubimage(resizeimg, subimgname, None)
+    
+        # total_imgpath  = os.path.join(self.out_total_imgpath, imgname.replace('/', '_'))
+        # totalimg = copy.deepcopy(resizeimg)
+        # # draw boxes
+        # from panda_utils import get_color
+        # for l, box in boxes.items():
+        #     for r, c in [(x, y) for x in range(box[0], box[2], 100) for y in range(box[1], box[3], 100)]:
+        #         totalimg[c:c+50, r:r+50] = get_color(l)
+        #     cv2.rectangle(totalimg, (box[0], box[1]), (box[2], box[3]), get_color(l), 5)
+        # totalimg = cv2.resize(totalimg, None, fx=0.1, fy=0.1, interpolation=cv2.INTER_CUBIC) 
+        # cv2.imwrite(total_imgpath, totalimg)
+        # print('save to {}'.format(total_imgpath))
+
+        if self.annomode == 'person group':
+            newobjlist = self.personGroupAnnoSplit(boxes, imgheight, imgwidth)
+        elif self.annomode == 'vehicle group':
+            newobjlist = self.vehicleGroupAnnoSplit(boxes, imgheight, imgwidth)
+        # split annotations according to annotation mod
+        subimageannos = {subimgname: {
+            "image size": {
+                "height": imgheight,
+                "width": imgwidth,
+            },
+            "objects list": newobjlist,
+        }}
+        return subimageannos
+    
+    def personGroupAnnoSplit(self, boxes_dict, imgheight, imgwidth):
+        newobjlist = []
+        for _, rect in boxes_dict.items():
+            newobjlist.append({
+                "category": 'person group',
+                "rect": self.restrainRect(rect, imgwidth, imgheight)
+            })
+            
+        return newobjlist
+    
+    def vehicleGroupAnnoSplit(self, boxes_dict, imgheight, imgwidth):
+        newobjlist = []
+        for _, rect in boxes_dict.items():
+            newobjlist.append({
+                "category": 'vehicle group',
+                "rect": self.restrainRect(rect, imgwidth, imgheight)
+            })
+        return newobjlist
+
+    def get_iou(self, bb1, bb2):
+        """
+        Calculate the Intersection over Union (IoU) of two bounding boxes.
+
+        Parameters
+        ----------
+        bb1 : set
+            Keys: ('x1', 'y1', 'x2', 'y2')
+            The (x1, y1) position is at the top left corner,
+            the (x2, y2) position is at the bottom right corner
+        bb2 : set
+            Keys: ('x1', 'y1', 'x2', 'y2')
+
+        Returns
+        -------
+        float
+            in [0, 1]
+        """
+        assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
+        assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
+
+        # determine the coordinates of the intersection rectangle
+        x_left = max(bb1[0], bb2[0])
+        y_top = max(bb1[1], bb2[1])
+        x_right = min(bb1[2], bb2[2])
+        y_bottom = min(bb1[3], bb2[3])
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+        # The intersection of two axis-aligned bounding boxes is always an
+        # axis-aligned bounding box
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        # compute the area of both AABBs
+        bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
+        bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
+        # compute the intersection over union by taking the intersection
+        # area and dividing it by the sum of prediction + ground-truth
+        # areas - the interesection area
+        iou = intersection_area / float(bb1_area + bb2_area - intersection_area)
+        assert iou >= 0.0 and iou <= 1.0
+        return iou
+
+    def restrainRect(self, rect, imgwidth, imgheight):
+        xmin, ymin = int(rect[0]), int(rect[1])
+        xmax, ymax = int(rect[2]), int(rect[3])
+        return {
+            'tl': {
+                'x': xmin / imgwidth,
+                'y': ymin / imgheight
+            },
+            'br': {
+                'x': xmax / imgwidth,
+                'y': ymax / imgheight
+            }
+        }
