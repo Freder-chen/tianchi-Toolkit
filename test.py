@@ -5,8 +5,6 @@ import numpy as np
 from scipy import stats
 
 
-
-
 '''
     utils
 '''
@@ -28,6 +26,41 @@ from panda_utils import get_color
 '''
     test code
 '''
+
+def test_person_lanel_name():
+    with open('dataset/train_A/image_annos/person_bbox_train.json', 'r') as load_f:
+        annodict = json.load(load_f)
+    item_cates = set()
+    for k, img in annodict.items():
+        for item in img['objects list']:
+            _l = len(item_cates)
+            item_cates.add(item['category'])
+            if len(item_cates) > _l:
+                print(item)
+    print(item_cates)
+
+# test_person_lanel_name()
+
+def test_person():
+    from panda_utils import get_color
+    imgdir = 'dataset/train_A/image_train'
+    with open('dataset/train_A/image_annos/person_bbox_train.json', 'r') as load_f:
+        annodict = json.load(load_f)
+    for k, img in annodict.items():
+        imgheight = img['image size']['height']
+        imgwidth = img['image size']['width']
+        for item in img['objects list']:
+            if item['category'] == 'fake person':
+                box = int(item['rect']['tl']['x'] * imgwidth), int(item['rect']['tl']['y'] * imgheight), int(item['rect']['br']['x'] * imgwidth), int(item['rect']['br']['y'] * imgheight)
+                print(box)
+                image = cv2.imread(os.path.join(imgdir, k))
+                cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), get_color(0), 10)
+                cv2.imwrite('test.jpg', image)
+                return
+
+# test_person()
+
+
 
 def test_person_label_range():
     with open('dataset/train_A/image_annos/person_bbox_train.json', 'r') as load_f:

@@ -461,8 +461,8 @@ class ScaleModelImgSplit(ImgSplit):
                  code='utf-8',
                  subwidth=2048,
                  subheight=1024,
-                 multi=1,
-                 thresh=0.8,
+                 thresh=0.1,
+                 gap=5,
                  outext='.jpg',
                  imagepath='image_train',
                  annopath='image_annos',
@@ -481,18 +481,46 @@ class ScaleModelImgSplit(ImgSplit):
         :param thresh: the square thresh determine whether to keep the instance which is cut in the process of split
         :param outext: ext for the output image format
         """
-        super(ScaleModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, multi, thresh, outext, imagepath, annopath)
+        super(ScaleModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, thresh, outext, imagepath, annopath)
+        self.gap = gap
         # self.out_total_imgpath = os.path.join(self.outpath, f'{annomode}_total_image')
         # if not os.path.exists(self.out_total_imgpath):
         #     os.makedirs(self.out_total_imgpath)
+    
+    def splitdata(self, scale, imgrequest=None, imgfilters=[], split_scales=[1]):
+        """
+        :param scale: resize rate before cut
+        :param imgrequest: list, images names you want to request, eg. ['1-HIT_canteen/IMG_1_4.jpg', ...]
+        :param imgfilters: essential keywords in image name
+        """
+        if imgrequest is None or not isinstance(imgrequest, list):
+            imgnames = list(self.annos.keys())
+        else:
+            imgnames = imgrequest
 
-    def SplitSingle(self, imgname, scale=1):
-        """
-        split a single image and ground truth
-        :param imgname: image name
-        :param scale: the resize scale for the image
-        :return:
-        """
+        splitannos = {}
+        for imgname in imgnames:
+            iskeep = False
+            for imgfilter in imgfilters:
+                if imgfilter in imgname:
+                    iskeep = True
+            if imgfilters and not iskeep:
+                continue
+            splitdict = self.SplitSingle(imgname, scale, split_scales)
+            splitannos.update(splitdict)
+
+        # add image id
+        imgid = 1
+        for imagename in splitannos.keys():
+            splitannos[imagename]['image id'] = imgid
+            imgid += 1
+        # save new annotation for split images
+        outdir = os.path.join(self.outannopath, self.outannofile)
+        with open(outdir, 'w', encoding=self.code) as f:
+            dict_str = json.dumps(splitannos, indent=2)
+            f.write(dict_str)
+
+    def SplitSingle(self, imgname, scale=1, split_scales=[1]):
         imgpath = os.path.join(self.imagepath, imgname)
         img = self.loadImg(imgpath)
         if img is None: return
@@ -503,100 +531,105 @@ class ScaleModelImgSplit(ImgSplit):
         imgheight, imgwidth = resizeimg.shape[:2]
         # split image and annotation in sliding window manner
         outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale)
+
+        # split image
+        subimageannos = {}
+        for split_scale in split_scales:
+            sswidth, ssheight = self.subwidth * split_scale, self.subheight * split_scale
+            ssimg = cv2.resize(resizeimg, (sswidth, ssheight), interpolation=cv2.INTER_CUBIC)
+            for left in range(0, sswidth - self.subwidth + 1, self.subwidth):
+                for up in range(0, ssheight - self.subheight + 1, self.subheight):
+                    right = min(left + self.subwidth, sswidth - 1)
+                    down = min(up + self.subheight, ssheight - 1)
+                    coordinates = left, up, right, down
+                    # save images
+                    subimgname = outbasename + '__' + str(split_scale) + '__' + str(left) + '__' + str(up) + self.outext
+                    self.savesubimage(ssimg, subimgname, coordinates)
+                    # split annotations according to annotation mode
+                    if self.annomode == 'person group':
+                        newobjlist = self.personGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
+                    elif self.annomode == 'vehicle group':
+                        newobjlist = self.vehicleGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
+                    
+                    # # draw boxes
+                    # total_imgpath  = os.path.join(self.out_total_imgpath, subimgname.replace('/', '_'))
+                    # totalimg = copy.deepcopy(ssimg[up: down, left: right])
+                    # from panda_utils import get_color
+                    # for l, objdict in enumerate(newobjlist):
+                    #     objdict = objdict['rect']
+                    #     _w, _h = self.subwidth, self.subheight
+                    #     box = int(objdict['tl']['x'] * _w), int(objdict['tl']['y'] * _h), int(objdict['br']['x'] * _w), int(objdict['br']['y'] * _h)
+                    #     cv2.rectangle(totalimg, (box[0], box[1]), (box[2], box[3]), get_color(l), 5)
+                    # cv2.imwrite(total_imgpath, totalimg)
+                    # print('save to {}'.format(total_imgpath))
+
+                    subimageannos[subimgname] = {
+                        "image size": {
+                            "height": down - up + 1,
+                            "width": right - left + 1
+                        },
+                        "objects list": newobjlist
+                    }
+        return subimageannos
+    
+    def personGroupAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        objlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+        objmodelist = [obj for obj in objlist if obj['category'] in ['person', 'crowd', 'people']]
         
-        # split by object
-        objmodelist = objlist
-        if self.annomode == 'person group':
-            objmodelist = [obj for obj in objlist if obj['category'] == 'person']
-        if self.annomode == 'vehicle group':
-            _L_ = ['motorcycle', 'midsize car', 'bicycle', 'tricycle', 'small car', 'vehicles', 'baby carriage', 'large car', 'electric car']
-            objmodelist = [obj for obj in objlist if obj['category'] in _L_]
-        # point clustering
-        gap = 100; max_dist = 2000
-        points = np.empty(shape=(0,2))
-        for object_dict in objmodelist:
-            rectdict = object_dict['rects']['full body'] if self.annomode == 'person group' else object_dict['rect']
+        newobjlist = []
+        for rect in self.merge_boxes(objmodelist, imgwidth, imgheight):
+            newobjlist.append({
+                "category": 'person group',
+                "rect": rect
+            })
+        return newobjlist
+    
+    def vehicleGroupAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        objlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+        _L_ = ['motorcycle', 'midsize car', 'bicycle', 'tricycle', 'small car', 'vehicles', 'baby carriage', 'large car', 'electric car']
+        objmodelist = [obj for obj in objlist if obj['category'] in _L_]
+
+        newobjlist = []
+        for rect in self.merge_boxes(objmodelist, imgwidth, imgheight):
+            newobjlist.append({
+                "category": 'vehicle group',
+                "rect": rect
+            })
+        return newobjlist
+    
+    def merge_boxes(self, objlist, imgwidth, imgheight):
+        # find all boxes
+        boxes = {}
+        for idx, object_dict in enumerate(objlist):
+            rectdict = object_dict['rects']['full body'] if object_dict['category'] == 'person' else object_dict['rect']
             xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
             xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
             if xmin >= xmax or ymin >= ymax:
-                print('object error:', xmin, ymin, xmax, ymax)
+                print('object label error:', xmin, ymin, xmax, ymax)
+                print(objdict)
                 continue
-            points = np.append(points, [[x, y] for x in range(xmin, xmax + 1, gap) for y in range(ymin, ymax + 1, gap)], axis=0)
-        Z = linkage(points, 'ward')
-        labels = np.array(fcluster(Z, max_dist, criterion='distance'))
-        point_clus = {l: points[np.where(labels == l)] for l in np.unique(labels)}
-
-        # generate boxes
-        boxes = {}
-        for k, v in point_clus.items():
-            xmin, ymin = np.amin(v[:, 0]), np.amin(v[:, 1])
-            xmax, ymax = np.amax(v[:, 0]), np.amax(v[:, 1])
-            boxes[k] = int(xmin), int(ymin), min(int(xmax + gap), imgwidth - 1), min(int(ymax + gap), imgheight - 1)
+            box = xmin, ymin, xmax, ymax
+            boxes[idx] = box
+        # merge overlap boxes
         trans = True
         while trans:
             trans = False
             newboxes = {}
             while len(boxes):
-                k, v = boxes.popitem()
-                _v = max(v[0] - gap, 0), max(v[1] - gap, 0), min(v[2] + gap, imgwidth - 1), min(v[3] + gap, imgheight - 1)
-                merge_bi = [i for i, j in boxes.items() if self.get_iou(_v, j) > 0.]
+                idx, box = boxes.popitem()
+                _box = max(box[0] - self.gap, 0), max(box[1] - self.gap, 0), min(box[2] + self.gap, imgwidth - 1), min(box[3] + self.gap, imgheight - 1)
+                merge_bi = [i for i, j in boxes.items() if self.get_iou(_box, j) > 0.]
                 if len(merge_bi) != 0:
                     trans = True
-                    merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(v)])
+                    merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(box)]) # add box, not _box
                     xmin, ymin = np.amin(merge_boxes[:, 0]), np.amin(merge_boxes[:, 1])
                     xmax, ymax = np.amax(merge_boxes[:, 2]), np.amax(merge_boxes[:, 3])
-                    v = xmin, ymin, xmax, ymax
+                    box = xmin, ymin, xmax, ymax
                     while len(merge_bi): boxes.pop(merge_bi.pop())
-                newboxes[k] = v
+                newboxes[idx] = box
             boxes = newboxes
-        
-        subimgname = outbasename + self.outext
-        self.savesubimage(resizeimg, subimgname, None)
-    
-        # total_imgpath  = os.path.join(self.out_total_imgpath, imgname.replace('/', '_'))
-        # totalimg = copy.deepcopy(resizeimg)
-        # # draw boxes
-        # from panda_utils import get_color
-        # for l, box in boxes.items():
-        #     for r, c in [(x, y) for x in range(box[0], box[2], 100) for y in range(box[1], box[3], 100)]:
-        #         totalimg[c:c+50, r:r+50] = get_color(l)
-        #     cv2.rectangle(totalimg, (box[0], box[1]), (box[2], box[3]), get_color(l), 5)
-        # totalimg = cv2.resize(totalimg, None, fx=0.1, fy=0.1, interpolation=cv2.INTER_CUBIC) 
-        # cv2.imwrite(total_imgpath, totalimg)
-        # print('save to {}'.format(total_imgpath))
-
-        if self.annomode == 'person group':
-            newobjlist = self.personGroupAnnoSplit(boxes, imgheight, imgwidth)
-        elif self.annomode == 'vehicle group':
-            newobjlist = self.vehicleGroupAnnoSplit(boxes, imgheight, imgwidth)
-        # split annotations according to annotation mod
-        subimageannos = {subimgname: {
-            "image size": {
-                "height": imgheight,
-                "width": imgwidth,
-            },
-            "objects list": newobjlist,
-        }}
-        return subimageannos
-    
-    def personGroupAnnoSplit(self, boxes_dict, imgheight, imgwidth):
-        newobjlist = []
-        for _, rect in boxes_dict.items():
-            newobjlist.append({
-                "category": 'person group',
-                "rect": self.restrainRect(rect, imgwidth, imgheight)
-            })
-            
-        return newobjlist
-    
-    def vehicleGroupAnnoSplit(self, boxes_dict, imgheight, imgwidth):
-        newobjlist = []
-        for _, rect in boxes_dict.items():
-            newobjlist.append({
-                "category": 'vehicle group',
-                "rect": self.restrainRect(rect, imgwidth, imgheight)
-            })
-        return newobjlist
+        for _, rect in boxes.items():
+            yield self.restrainRectByBox(rect, imgwidth, imgheight)
 
     def get_iou(self, bb1, bb2):
         """
@@ -639,7 +672,7 @@ class ScaleModelImgSplit(ImgSplit):
         assert iou >= 0.0 and iou <= 1.0
         return iou
 
-    def restrainRect(self, rect, imgwidth, imgheight):
+    def restrainRectByBox(self, rect, imgwidth, imgheight):
         xmin, ymin = int(rect[0]), int(rect[1])
         xmax, ymax = int(rect[2]), int(rect[3])
         return {

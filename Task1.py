@@ -55,10 +55,10 @@ def scale_model_split():
     vehicle_group_anno_file = 'vehicle_group_bbox_train.json'
 
     print('scale model split procsess 1.....')
-    split = ScaleModelImgSplit(IMAGE_ROOT, 'person_bbox_train.json', 'person group', OUT_PERSON_GROUP_PATH, person_group_anno_file)
-    split.splitdata(1)
+    split = ScaleModelImgSplit(IMAGE_ROOT, 'person_bbox_train.json', 'person group', OUT_PERSON_GROUP_PATH, person_group_anno_file, gap=5)
+    split.splitdata(1, imgfilters=None, split_scales=range(1, 11))
     split = ScaleModelImgSplit(IMAGE_ROOT, 'vehicle_bbox_train.json', 'vehicle group', OUT_VEHICLE_GROUP_PATH, vehicle_group_anno_file)
-    split.splitdata(1)
+    split.splitdata(1, imgfilters=None, split_scales=range(1, 11))
     
     print('scale model split procsess 2.....')
     src_person_group_file = pt.join(OUT_PERSON_GROUP_PATH, 'image_annos', person_group_anno_file)
@@ -124,7 +124,7 @@ def detection_model_split():
 
 def main():
     scale_model_split()
-    detection_model_split()
+    # detection_model_split()
 
 
 def split_train_val(annotations, trainpath, valpath, splitrate=0.7):

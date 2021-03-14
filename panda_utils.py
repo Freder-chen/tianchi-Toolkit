@@ -636,8 +636,8 @@ def generate_coco_anno_person_group(pgroupsrcfile, tgtfile, keywords=None):
                 annotation = dict()
                 rect = objdict['rect']
                 annotation["image_id"] = imgid
-                annotation["iscrowd"] = 1
-                annotation["ignore"] = 1
+                annotation["iscrowd"] = 0
+                annotation["ignore"] = 0
                 x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
                 annotation["bbox"] = [x, y, w, h]
                 annotation["area"] = float(w * h)
@@ -697,8 +697,8 @@ def generate_coco_anno_vehicle_group(vgroupsrcfile, tgtfile, keywords=None):
                 annotation = dict()
                 rect = objdict['rect']
                 annotation["image_id"] = imgid
-                annotation["iscrowd"] = 1
-                annotation["ignore"] = 1
+                annotation["iscrowd"] = 0
+                annotation["ignore"] = 0
                 x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
                 annotation["bbox"] = [x, y, w, h]
                 annotation["area"] = float(w * h)
