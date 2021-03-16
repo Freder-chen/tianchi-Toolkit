@@ -10,10 +10,10 @@ import os
 import os.path as pt
 import json
 import funcy
-import panda_utils as util
-from PANDA import PANDA_IMAGE, PANDA_VIDEO
-from ImgSplit import ImgSplit, DetectionModelImgSplit, ScaleModelImgSplit
-from ResultMerge import DetResMerge
+import panda_toolkit.panda_utils as util
+from panda_toolkit.PANDA import PANDA_IMAGE, PANDA_VIDEO
+from panda_toolkit.ImgSplit import ImgSplit, DetectionModelImgSplit, ScaleModelImgSplit
+from panda_toolkit.ResultMerge import DetResMerge
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 from sklearn.model_selection import train_test_split
@@ -42,6 +42,11 @@ IMAGE_ROOT = 'dataset/train_A'
 # COCO_FORMAT_JSON_PATH = 'splits/test_A/coco_format_json'
 
 
+def main():
+    # scale_model_split()
+    detection_model_split()
+
+
 def scale_model_split():
     OUT_PERSON_GROUP_PATH = 'splits/train_A/scale_model/split_person_group_train/'
     OUT_VEHICLE_GROUP_PATH = 'splits/train_A/scale_model/split_vehicle_group_train/'
@@ -56,9 +61,9 @@ def scale_model_split():
 
     print('scale model split procsess 1.....')
     split = ScaleModelImgSplit(IMAGE_ROOT, 'person_bbox_train.json', 'person group', OUT_PERSON_GROUP_PATH, person_group_anno_file, gap=5)
-    split.splitdata(1, imgfilters=None, split_scales=range(1, 11))
+    split.splitdata(1, imgfilters=[], split_scales=range(1, 11))
     split = ScaleModelImgSplit(IMAGE_ROOT, 'vehicle_bbox_train.json', 'vehicle group', OUT_VEHICLE_GROUP_PATH, vehicle_group_anno_file)
-    split.splitdata(1, imgfilters=None, split_scales=range(1, 11))
+    split.splitdata(1, imgfilters=[], split_scales=range(1, 11))
     
     print('scale model split procsess 2.....')
     src_person_group_file = pt.join(OUT_PERSON_GROUP_PATH, 'image_annos', person_group_anno_file)
@@ -95,10 +100,16 @@ def detection_model_split():
     vehicle_anno_file = 'vehicle_bbox_train.json'
 
     print('scale model split procsess 1.....')
-    split = DetectionModelImgSplit(IMAGE_ROOT, 'person_bbox_train.json', 'person', OUT_PERSON_PATH, person_anno_file)
-    split.splitdata(1) 
+    person_group_cfg = 'your path'
+    person_group_model = 'your path'
+
+    vehicle_group_cfg = 'your path'
+    vehicle_group_model = 'your path'
+
+    split = DetectionModelImgSplit(IMAGE_ROOT, 'person_bbox_train.json', 'person', OUT_PERSON_PATH, person_anno_file, cfg_filename=person_group_cfg, model_filename=person_group_model)
+    split.splitdata(1, score_thres=0.1) # the score thres should be lower nember.
     split = DetectionModelImgSplit(IMAGE_ROOT, 'vehicle_bbox_train.json', 'vehicle', OUT_VEHICLE_PATH, vehicle_anno_file)
-    split.splitdata(1)
+    split.splitdata(1, score_thres=0.1)
     
     print('scale model split procsess 2.....')
     src_person_file = pt.join(OUT_PERSON_PATH, 'image_annos', person_anno_file)
@@ -120,11 +131,6 @@ def detection_model_split():
         trainpath = pt.join(COCO_FORMAT_JSON_PATH, CATE[str(cid)] + '_train.json')
         valpath = pt.join(COCO_FORMAT_JSON_PATH, CATE[str(cid)] + '_val.json')
         split_train_val(annotations, trainpath, valpath)
-
-
-def main():
-    scale_model_split()
-    # detection_model_split()
 
 
 def split_train_val(annotations, trainpath, valpath, splitrate=0.7):

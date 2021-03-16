@@ -15,6 +15,8 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster
 from scipy.cluster.hierarchy import dendrogram, linkage
 
+import mmdutils
+
 
 class ImgSplit():
     def __init__(self,
@@ -331,15 +333,19 @@ class DetectionModelImgSplit(ImgSplit):
                  annomode,
                  outpath,
                  outannofile,
+                 cfg_filename,
+                 model_filename,
                  code='utf-8',
                  subwidth=2048,
                  subheight=1024,
                  multi=1,
+                 gap=0,
                  thresh=0.8,
+                 merge_thres=0.1,
                  outext='.jpg',
                  imagepath='image_train',
                  annopath='image_annos',
-                 outtotalpath=None
+                 outtotalpath=None,
                  ):
         """
         :param basepath: base directory for panda image data and annotations
@@ -354,10 +360,47 @@ class DetectionModelImgSplit(ImgSplit):
         :param thresh: the square thresh determine whether to keep the instance which is cut in the process of split
         :param outext: ext for the output image format
         """
+        
         super(DetectionModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, thresh=thresh, outext=outext, imagepath=imagepath, annopath=annopath)
         self.multi = multi
+        self.merge_thres = merge_thres
+        self.gap = gap
+        _, self.model = mmdutils.detector_prepare(cfg_filename, model_filename)
 
-    def SplitSingle(self, imgname, scale):
+    def splitdata(self, scale, imgrequest=None, imgfilters=[], score_thres=0.2):
+        """
+        :param scale: resize rate before cut
+        :param imgrequest: list, images names you want to request, eg. ['1-HIT_canteen/IMG_1_4.jpg', ...]
+        :param imgfilters: essential keywords in image name
+        """
+        if imgrequest is None or not isinstance(imgrequest, list):
+            imgnames = list(self.annos.keys())
+        else:
+            imgnames = imgrequest
+
+        splitannos = {}
+        for imgname in imgnames:
+            iskeep = False
+            for imgfilter in imgfilters:
+                if imgfilter in imgname:
+                    iskeep = True
+            if imgfilters and not iskeep:
+                continue
+            splitdict = self.SplitSingle(imgname, scale, score_thres)
+            splitannos.update(splitdict)
+
+        # add image id
+        imgid = 1
+        for imagename in splitannos.keys():
+            splitannos[imagename]['image id'] = imgid
+            imgid += 1
+        # save new annotation for split images
+        outdir = os.path.join(self.outannopath, self.outannofile)
+        with open(outdir, 'w', encoding=self.code) as f:
+            dict_str = json.dumps(splitannos, indent=2)
+            f.write(dict_str)
+
+    def SplitSingle(self, imgname, scale, score_thres=0.2):
         """
         split a single image and ground truth
         :param imgname: image name
@@ -378,69 +421,28 @@ class DetectionModelImgSplit(ImgSplit):
         imgheight, imgwidth = resizeimg.shape[:2]
 
         # split image and annotation in sliding window manner
-        outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale) + '__'
+        outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale)
         subimageannos = {}
 
-        # split by object
-        objmodelist = objlist
-        if self.annomode == 'person':
-            objmodelist = [obj for obj in objlist if obj['category'] == 'person']
+        bboxes_list, labels_list = mmdutils.det(img, self.model, self.subwidth, self.subheight, score_thres=score_thres)
+        # TODO: merge multi labels
+        bboxes_list = self.merge_and_rect_boxes(bboxes_list, imgwidth, imgheight, merge_thres=0.1)
+        labels_list = [0] * len(bboxes_list)
 
-        for object_dict in objmodelist:
-            # find img with obj
-            rectdict = object_dict['rects']['full body'] if self.annomode == 'person' else object_dict['rect']
-            xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
-            xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
-            width, height = xmax - xmin, ymax - ymin
-
-            # ramdon find img
-            left = max(int(xmin - self.multi * random() * width), 0)
-            right = min(int(xmax + self.multi * random() * width), imgwidth - 1)
-            up = max(int(ymin - self.multi * random() * height), 0)
-            down = min(int(ymax + self.multi * random() * height), imgheight - 1)
-
-            # rescale img
-            rewidth, reheight = right - left, down - up
-            if rewidth / reheight > self.subwidth / self.subheight:
-                _reheight = rewidth * self.subheight / self.subwidth
-                _rand_u = (_reheight - reheight) * random()
-                _rand_d = (_reheight - reheight) - _rand_u
-
-                if down + _rand_d > imgheight - 1:
-                    down = imgheight - 1
-                    up = max(down - _reheight, 0)
-                elif up - _rand_u < 0:
-                    up = 0
-                    down = min(_reheight, imgheight - 1)
-                else:
-                    up -= _rand_u
-                    down += _rand_d
-            else:
-                _rewidth = reheight * self.subwidth / self.subheight
-                _rand_l = (_rewidth - rewidth) * random()
-                _rand_r = (_rewidth - rewidth) - _rand_l
-
-                if right + _rand_r > imgwidth - 1:
-                    right = imgheight - 1
-                    left = max(right - _rewidth, 0)
-                elif left - _rand_l < 0:
-                    left = 0
-                    right = min(_rewidth, imgwidth - 1)
-                else:
-                    right += _rand_r
-                    left -= _rand_l
-            
-            left, up, right, down = int(left), int(up), int(right), int(down)
+        # mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0.)
+        
+        for bbox in bboxes_list:
+            left, up, right, down, score = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]), bbox[4]
             coordinates = left, up, right, down
-
-            subimgname = outbasename + str(left) + '__' + str(up) + self.outext
+            # save images
+            subimgname = outbasename + '__' + str(left) + '__' + str(up) + self.outext
             self.savesubimage(resizeimg, subimgname, coordinates)
-
-            # split annotations according to annotation mod
+            # split annotations according to annotation mode
             if self.annomode == 'person':
                 newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
             elif self.annomode == 'vehicle':
                 newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+
             subimageannos[subimgname] = {
                 "image size": {
                     "height": down - up + 1,
@@ -449,7 +451,98 @@ class DetectionModelImgSplit(ImgSplit):
                 "objects list": newobjlist,
             }
         return subimageannos
+    
+    def merge_and_rect_boxes(self, bboxes_list, imgwidth, imgheight, merge_thres=0.):
+        boxes = {idx: self.rect_box(box, imgwidth, imgheight) for idx, box in enumerate(bboxes_list)}
+        # merge overlap boxes
+        trans = True
+        while trans:
+            trans = False
+            newboxes = {}
+            while len(boxes):
+                idx, box = boxes.popitem()
+                _box = max(box[0] - self.gap, 0), max(box[1] - self.gap, 0), min(box[2] + self.gap, imgwidth - 1), min(box[3] + self.gap, imgheight - 1), box[4]
+                merge_bi = [i for i, j in boxes.items() if self.get_iou(_box[:5], j[:5]) > merge_thres]
+                if len(merge_bi) != 0:
+                    trans = True
+                    merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(box)]) # add box, not _box
+                    xmin, ymin = np.amin(merge_boxes[:, 0]), np.amin(merge_boxes[:, 1])
+                    xmax, ymax = np.amax(merge_boxes[:, 2]), np.amax(merge_boxes[:, 3])
+                    score_max = np.amax(merge_boxes[:, 4])
+                    box = [xmin, ymin, xmax, ymax, score_max]
+                    box = self.rect_box(box, imgwidth, imgheight)
+                    while len(merge_bi): boxes.pop(merge_bi.pop())
+                newboxes[idx] = box
+            boxes = newboxes
+        return np.array(list(boxes.values()))
+    
+    def get_iou(self, bb1, bb2):
+        """
+        Calculate the Intersection over Union (IoU) of two bounding boxes.
 
+        Parameters
+        ----------
+        bb1 : set
+            Keys: ('x1', 'y1', 'x2', 'y2')
+            The (x1, y1) position is at the top left corner,
+            the (x2, y2) position is at the bottom right corner
+        bb2 : set
+            Keys: ('x1', 'y1', 'x2', 'y2')
+
+        Returns
+        -------
+        float
+            in [0, 1]
+        """
+        assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
+        assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
+
+        # determine the coordinates of the intersection rectangle
+        x_left = max(bb1[0], bb2[0])
+        y_top = max(bb1[1], bb2[1])
+        x_right = min(bb1[2], bb2[2])
+        y_bottom = min(bb1[3], bb2[3])
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+        # The intersection of two axis-aligned bounding boxes is always an
+        # axis-aligned bounding box
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        # compute the area of both AABBs
+        bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
+        bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
+        # compute the intersection over union by taking the intersection
+        # area and dividing it by the sum of prediction + ground-truth
+        # areas - the interesection area
+        iou = intersection_area / float(bb1_area + bb2_area - intersection_area)
+        assert iou >= 0.0 and iou <= 1.0
+        return iou
+
+    def rect_box(slef, box, imgwidth, imgheight):
+        box_w, box_h = box[2] - box[0], box[3] - box[1]
+        box_wh = max(box_w, box_h)
+        box_w_change = (box_wh - box_w) / 2
+        box_h_change = (box_wh - box_h) / 2
+
+        if box[0] - box_w_change < 0:
+            box[0] = 0
+            box[2] = box_wh
+        elif box[2] + box_w_change > imgwidth - 1:
+            box[2] = imgwidth - 1
+            box[0] = imgwidth - 1 - box_wh
+        else:
+            box[0] -= box_w_change
+            box[2] += box_w_change
+        
+        if box[1] - box_h_change < 0:
+            box[1] = 0
+            box[3] = box_wh
+        elif box[3] + box_h_change > imgheight - 1:
+            box[3] = imgheight - 1
+            box[1] = imgheight - 1 - box_wh
+        else:
+            box[1] -= box_h_change
+            box[3] += box_h_change
+        return box
 
 class ScaleModelImgSplit(ImgSplit):
     def __init__(self,

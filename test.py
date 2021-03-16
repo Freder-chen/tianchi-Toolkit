@@ -21,7 +21,8 @@ def loadImg(imgpath):
     return img
 
 
-from panda_utils import get_color
+from panda_toolkit.panda_utils import get_color
+
 
 '''
     test code
@@ -149,3 +150,23 @@ def draw_person_group():
         cv2.putText(resizeimg, str(l), (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
     # show rectangle
     cv2.imwrite('overlap.jpg', resizeimg)
+
+
+
+def test_group_model():
+    HEIGHT = 1024 # Sliding Window Height
+    WIDTH = 2048 # Sliding Window Width
+
+    import mmcv
+    import mmdutils
+
+    img_filename = 'dataset/train_A/image_train/01_University_Canteen/IMG_01_01.jpg'
+    img = cv2.imread(img_filename)
+
+    cfg_filename = 'person_group/cascade_rcnn_r50_fpn_1x_coco.py'
+    model_filename = 'person_group/epoch_22.pth'
+    cfg, model = mmdutils.detector_prepare(cfg_filename, model_filename)
+
+    bboxes_list, labels_list = mmdutils.det(img, model, WIDTH, HEIGHT, score_thres=0.2)
+    # det_bboxes, det_labels = nms_after_det(bboxes_list, labels_list)
+    mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0.)

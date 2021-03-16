@@ -10,7 +10,10 @@ import json
 import random
 from collections import defaultdict
 
-import panda_utils as util
+try:
+    import panda_utils as util
+except ImportError:
+    import panda_toolkit.panda_utils as util
 
 IMAGE_ANNO_MODE = ('person', 'vehicle', 'person&vehicle', 'headbbox', 'headpoint')
 

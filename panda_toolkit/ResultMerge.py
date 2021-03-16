@@ -6,9 +6,12 @@
 
 import os
 import numpy as np
-import panda_utils as util
 import json
 from collections import defaultdict
+try:
+    import panda_utils as util
+except ImportError:
+    import panda_toolkit.panda_utils as util
 
 
 class DetResMerge():
