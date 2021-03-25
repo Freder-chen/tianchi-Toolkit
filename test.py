@@ -71,9 +71,9 @@ def test_person_label_range():
         label_sizes = []
         for item in img['objects list']:
             if item['category'] == 'person':
-                # width = (item['rects']['full body']['br']['x'] - item['rects']['full body']['tl']['x']) * img['image size']['width']
-                height = (item['rects']['full body']['br']['y'] - item['rects']['full body']['tl']['y']) * img['image size']['height']
-                label_sizes.append(height)
+                width = (item['rects']['head']['br']['x'] - item['rects']['head']['tl']['x']) * img['image size']['width']
+                # height = (item['rects']['head']['br']['y'] - item['rects']['head']['tl']['y']) * img['image size']['height']
+                label_sizes.append(width)
                 # label_sizes.append((width, height))
         if len(label_sizes) > 0:
             print(k, stats.describe(label_sizes))
@@ -85,7 +85,7 @@ def test_person_label_range():
 
 # "height": 15052,
 # "width": 26753
-# test_person_label_range()
+test_person_label_range()
 
 
 def test_vehicles_label_range():
@@ -160,13 +160,18 @@ def test_group_model():
     import mmcv
     import mmdutils
 
-    img_filename = 'dataset/train_A/image_train/01_University_Canteen/IMG_01_01.jpg'
+    # img_filename = 'dataset/train_A/image_train/01_University_Canteen/IMG_01_01.jpg'
+    img_filename = '/home/ubuntu/Developer/PANDA-Toolkit/dataset/train_A/image_train/08_Dongmen_Street/08_Dongmen_Street_IMG_08_09___1__9156__4050.jpg'
     img = cv2.imread(img_filename)
 
-    cfg_filename = 'person_group/cascade_rcnn_r50_fpn_1x_coco.py'
-    model_filename = 'person_group/epoch_22.pth'
+    # cfg_filename = 'person_group/cascade_rcnn_r50_fpn_1x_coco.py'
+    # model_filename = 'person_group/epoch_22.pth'
+    cfg_filename = '/home/ubuntu/public/Dataset/baseline/mmdetection-master/group_detector1/person_group/cascade_rcnn_r50_fpn_1x_coco.py'
+    model_filename = '/home/ubuntu/public/Dataset/baseline/mmdetection-master/group_detector1/person_group/epoch_22.pth'
     cfg, model = mmdutils.detector_prepare(cfg_filename, model_filename)
 
     bboxes_list, labels_list = mmdutils.det(img, model, WIDTH, HEIGHT, score_thres=0.2)
     # det_bboxes, det_labels = nms_after_det(bboxes_list, labels_list)
-    mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0.)
+    mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0., show_scale=0.5)
+
+# test_group_model()

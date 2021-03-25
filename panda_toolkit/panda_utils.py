@@ -15,7 +15,8 @@ CATEGORY = {
     'head': 3,
     'vehicle': 4,
     'person group': 5,
-    'vehicle group': 6
+    'vehicle group': 6,
+    'group': 7,
 }
 
 
@@ -68,8 +69,7 @@ def restrain_between_0_1(values_list):
 
 
 def RectDict2List(rectdict, imgwidth, imgheight, scale, mode='tlbr'):
-    x1, y1, x2, y2 = restrain_between_0_1([rectdict['tl']['x'], rectdict['tl']['y'],
-                                           rectdict['br']['x'], rectdict['br']['y']])
+    x1, y1, x2, y2 = restrain_between_0_1([rectdict['tl']['x'], rectdict['tl']['y'], rectdict['br']['x'], rectdict['br']['y']])
     xmin = int(x1 * imgwidth * scale)
     ymin = int(y1 * imgheight * scale)
     xmax = int(x2 * imgwidth * scale)
@@ -472,19 +472,22 @@ def generate_coco_anno_person(personsrcfile, tgtfile, keywords=None):
             cate = objdict['category']
             if cate == 'person':
                 for label in ['visible body', 'full body', 'head']:
-                    rect = objdict['rects'][label]
-                    annotation = dict()
-                    annotation["image_id"] = imgid
-                    annotation["ignore"] = 0
-                    annotation["iscrowd"] = 0
-                    x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
-                    annotation["bbox"] = [x, y, w, h]
-                    annotation["area"] = float(w * h)
-                    annotation["category_id"] = CATEGORY[label]
-                    annotation["id"] = objid
-                    objid += 1
-                    annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]
-                    annotations.append(annotation)
+                    try:
+                        rect = objdict['rects'][label]
+                        annotation = dict()
+                        annotation["image_id"] = imgid
+                        annotation["ignore"] = 0
+                        annotation["iscrowd"] = 0
+                        x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
+                        annotation["bbox"] = [x, y, w, h]
+                        annotation["area"] = float(w * h)
+                        annotation["category_id"] = CATEGORY[label]
+                        annotation["id"] = objid
+                        objid += 1
+                        annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]
+                        annotations.append(annotation)
+                    except:
+                        pass # ignore if key is not exist
             else:
                 annotation = dict()
                 if cate == 'crowd':
@@ -703,6 +706,67 @@ def generate_coco_anno_vehicle_group(vgroupsrcfile, tgtfile, keywords=None):
                 annotation["bbox"] = [x, y, w, h]
                 annotation["area"] = float(w * h)
                 annotation["category_id"] = CATEGORY['vehicle group']
+                annotation["id"] = objid
+                objid += 1
+                annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]
+                annotations.append(annotation)
+
+    attrDict["images"] = images
+    attrDict["annotations"] = annotations
+    attrDict["type"] = "instances"
+    
+    # print attrDict
+    jsonString = json.dumps(attrDict, indent=2)
+    with open(tgtfile, "w") as f:
+        f.write(jsonString)
+    
+    return imageids
+
+
+def generate_coco_anno_group(vgroupsrcfile, tgtfile, keywords=None):
+    attrDict = dict()
+    attrDict["categories"] = [
+        {"supercategory": "none", "id": 7, "name": 'group'}
+    ]
+    with open(vgroupsrcfile, 'r') as load_f:
+        group_anno_dict = json.load(load_f)
+
+    images = list()
+    annotations = list()
+    imageids = list()
+
+    objid = 1
+    for (imagename, imagedict) in group_anno_dict.items():
+        if keywords:
+            flag = False
+            for kw in keywords:
+                if kw in imagename:
+                    flag = True
+            if not flag:
+                continue
+        image = dict()
+        image['file_name'] = imagename
+        imgid = imagedict['image id']
+        imageids.append(imgid)
+        imgwidth = imagedict['image size']['width']
+        imgheight = imagedict['image size']['height']
+        image['height'] = imgheight
+        image['width'] = imgwidth
+        image['id'] = imgid
+        images.append(image)
+
+        for objdict in imagedict['objects list']:
+            cate = objdict['category']
+            if cate in ['group']:
+                annotation = dict()
+                rect = objdict['rect']
+                annotation["image_id"] = imgid
+                annotation["iscrowd"] = 0
+                annotation["ignore"] = 0
+                x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
+                annotation["bbox"] = [x, y, w, h]
+                annotation["area"] = float(w * h)
+                annotation["category_id"] = CATEGORY['group']
                 annotation["id"] = objid
                 objid += 1
                 annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]

@@ -187,7 +187,7 @@ class ImgSplit():
 
         return subimageannos
 
-    def judgeRect(self, rectdict, imgwidth, imgheight, coordinates):
+    def judgeRect(self, rectdict, imgwidth, imgheight, coordinates, thresh=None):
         left, up, right, down = coordinates
         xmin = int(rectdict['tl']['x'] * imgwidth)
         ymin = int(rectdict['tl']['y'] * imgheight)
@@ -201,8 +201,7 @@ class ImgSplit():
             lens = min(xmax, right) - max(xmin, left)
             wide = min(ymax, down) - max(ymin, up)
             intersection = lens * wide
-
-        return intersection and intersection / (square + 1e-5) >= self.thresh
+        return intersection and intersection / (square + 1e-5) >= (thresh or self.thresh)
 
     def restrainRect(self, rectdict, imgwidth, imgheight, coordinates):
         left, up, right, down = coordinates
@@ -210,10 +209,12 @@ class ImgSplit():
         ymin = int(rectdict['tl']['y'] * imgheight)
         xmax = int(rectdict['br']['x'] * imgwidth)
         ymax = int(rectdict['br']['y'] * imgheight)
+        
         xmin = max(xmin, left)
         xmax = min(xmax, right)
         ymin = max(ymin, up)
         ymax = min(ymax, down)
+        
         return {
             'tl': {
                 'x': (xmin - left) / (right - left),
@@ -255,21 +256,39 @@ class ImgSplit():
                 fullrect = object_dict['rects']['full body']
                 visiblerect = object_dict['rects']['visible body']
                 headrect = object_dict['rects']['head']
-                # only keep a person whose 3 box all satisfy the requirement
-                if self.judgeRect(fullrect, imgwidth, imgheight, coordinates) & \
-                   self.judgeRect(visiblerect, imgwidth, imgheight, coordinates) & \
-                   self.judgeRect(headrect, imgwidth, imgheight, coordinates):
+                
+                # only keep label which box satisfy the requirement
+                rects = {}
+                if self.judgeRect(fullrect, imgwidth, imgheight, coordinates):
+                    rects["full body"] = self.restrainRect(fullrect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(visiblerect, imgwidth, imgheight, coordinates):
+                    rects["visible body"] = self.restrainRect(visiblerect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(headrect, imgwidth, imgheight, coordinates):
+                    rects["head"] = self.restrainRect(headrect, imgwidth, imgheight, coordinates)
+                if rects:
                     newobjlist.append({
                         "category": objcate,
                         "pose": pose,
                         "riding type": riding,
                         "age": age,
-                        "rects": {
-                            "head": self.restrainRect(headrect, imgwidth, imgheight, coordinates),
-                            "visible body": self.restrainRect(visiblerect, imgwidth, imgheight, coordinates),
-                            "full body": self.restrainRect(fullrect, imgwidth, imgheight, coordinates)
-                        }
+                        "rects": rects,
                     })
+
+                # only keep a person whose 3 box all satisfy the requirement
+                # if self.judgeRect(fullrect, imgwidth, imgheight, coordinates) & \
+                #    self.judgeRect(visiblerect, imgwidth, imgheight, coordinates) & \
+                #    self.judgeRect(headrect, imgwidth, imgheight, coordinates):
+                #     newobjlist.append({
+                #         "category": objcate,
+                #         "pose": pose,
+                #         "riding type": riding,
+                #         "age": age,
+                #         "rects": {
+                #             "head": self.restrainRect(headrect, imgwidth, imgheight, coordinates),
+                #             "visible body": self.restrainRect(visiblerect, imgwidth, imgheight, coordinates),
+                #             "full body": self.restrainRect(fullrect, imgwidth, imgheight, coordinates)
+                #         }
+                #     })
             else:
                 rect = object_dict['rect']
                 if self.judgeRect(rect, imgwidth, imgheight, coordinates):
@@ -284,7 +303,7 @@ class ImgSplit():
         for object_dict in objlist:
             objcate = object_dict['category']
             rect = object_dict['rect']
-            if self.judgeRect(rect, imgwidth, imgheight, coordinates):
+            if self.judgeRect(rect, imgwidth, imgheight, coordinates, thresh=0.3):
                 newobjlist.append({
                     "category": objcate,
                     "rect": self.restrainRect(rect, imgwidth, imgheight, coordinates)
@@ -338,10 +357,15 @@ class DetectionModelImgSplit(ImgSplit):
                  code='utf-8',
                  subwidth=2048,
                  subheight=1024,
-                 multi=1,
+                 output_width=1024,
+                 output_height=1024,
                  gap=0,
-                 thresh=0.8,
-                 merge_thres=0.1,
+                 thresh=0.6,
+                 merge_thresh=0.1,
+                 merge_score_thresh=0.1,
+                 split_scales=4,
+                 split_gap=0.2,
+                 filter_size=2,
                  outext='.jpg',
                  imagepath='image_train',
                  annopath='image_annos',
@@ -362,12 +386,17 @@ class DetectionModelImgSplit(ImgSplit):
         """
         
         super(DetectionModelImgSplit, self).__init__(basepath, annofile, annomode, outpath, outannofile, code, subwidth, subheight, thresh=thresh, outext=outext, imagepath=imagepath, annopath=annopath)
-        self.multi = multi
-        self.merge_thres = merge_thres
+        self.merge_thresh = merge_thresh
+        self.merge_score_thresh = merge_score_thresh
         self.gap = gap
+        self.output_width = output_width
+        self.output_height = output_height
+        self.split_scales = split_scales
+        self.filter_size = filter_size
+        self.split_gap = 1 - split_gap if 0 <= split_gap and split_gap < 1 else 1
         _, self.model = mmdutils.detector_prepare(cfg_filename, model_filename)
 
-    def splitdata(self, scale, imgrequest=None, imgfilters=[], score_thres=0.2):
+    def splitdata(self, scale, imgrequest=None, imgfilters=[]):
         """
         :param scale: resize rate before cut
         :param imgrequest: list, images names you want to request, eg. ['1-HIT_canteen/IMG_1_4.jpg', ...]
@@ -386,7 +415,7 @@ class DetectionModelImgSplit(ImgSplit):
                     iskeep = True
             if imgfilters and not iskeep:
                 continue
-            splitdict = self.SplitSingle(imgname, scale, score_thres)
+            splitdict = self.SplitSingle(imgname, scale)
             splitannos.update(splitdict)
 
         # add image id
@@ -400,7 +429,7 @@ class DetectionModelImgSplit(ImgSplit):
             dict_str = json.dumps(splitannos, indent=2)
             f.write(dict_str)
 
-    def SplitSingle(self, imgname, scale, score_thres=0.2):
+    def SplitSingle(self, imgname, scale):
         """
         split a single image and ground truth
         :param imgname: image name
@@ -424,36 +453,150 @@ class DetectionModelImgSplit(ImgSplit):
         outbasename = imgname.replace('/', '_').split('.')[0] + '___' + str(scale)
         subimageannos = {}
 
-        bboxes_list, labels_list = mmdutils.det(img, self.model, self.subwidth, self.subheight, score_thres=score_thres)
+        bboxes_list, labels_list = mmdutils.det(img, self.model, self.subwidth, self.subheight, score_thres=self.merge_score_thresh)
         # TODO: merge multi labels
-        bboxes_list = self.merge_and_rect_boxes(bboxes_list, imgwidth, imgheight, merge_thres=0.1)
+        bboxes_list = self.merge_boxes(bboxes_list, imgwidth, imgheight, merge_thres=self.merge_thresh)
         labels_list = [0] * len(bboxes_list)
 
-        # mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0.)
+        # mmdutils.show(img, bboxes_list, labels_list, 'group', './test.jpg', score_thres=0.)
         
+        # split bbox if it's too large
         for bbox in bboxes_list:
             left, up, right, down, score = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]), bbox[4]
-            coordinates = left, up, right, down
-            # save images
-            subimgname = outbasename + '__' + str(left) + '__' + str(up) + self.outext
-            self.savesubimage(resizeimg, subimgname, coordinates)
-            # split annotations according to annotation mode
-            if self.annomode == 'person':
-                newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
-            elif self.annomode == 'vehicle':
-                newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+            left, up, right, down = max(left, 0), max(up, 0), min(right, imgwidth - 1), min(down, imgheight - 1)
+            assert left >= 0 and up >= 0 and right < imgwidth and down < imgheight, print(bbox)
 
-            subimageannos[subimgname] = {
-                "image size": {
-                    "height": down - up + 1,
-                    "width": right - left + 1,
-                },
-                "objects list": newobjlist,
-            }
+            # split if bbox is too large
+            split_bboxs = [[left, up, right, down]]
+            for split_scale in self.split_scales:
+                split_width = int(self.output_width * split_scale)
+                split_height = int(self.output_height * split_scale)
+                if right - left + 1 > split_width * (1 + self.split_gap) and down - up + 1 > split_height * (1 + self.split_gap):
+                    for l in range(left, right, int(split_width * self.split_gap)):
+                        for u in range(up, down, int(split_height * self.split_gap)):
+                            if l + split_width - 1 > imgwidth - 1: # limit when point exceeds img
+                                r = right; l = right - split_width + 1
+                            else:
+                                r = l + split_width - 1
+                            if u + split_height - 1 > imgheight - 1:
+                                d = down; u = down - split_height + 1
+                            else:
+                                d = u + split_height - 1
+                            split_bboxs.append([l, u, r, d])
+                elif right - left + 1 > split_width * (1 + self.split_gap):
+                    for l in range(left, right, int(split_width * self.split_gap)):
+                        if l + split_width - 1 > imgwidth - 1:
+                            r = right; l = right - split_width + 1
+                        else:
+                            r = l + split_width - 1
+                        split_bboxs.append([l, up, r, down])
+                elif down - up + 1 > split_height * (1 + self.split_gap):
+                    for u in range(up, down, int(split_height * self.split_gap)):
+                        if u + split_height - 1 > imgheight - 1:
+                            d = down; u = down - split_height + 1
+                        else:
+                            d = u + split_height - 1
+                        split_bboxs.append([left, u, right, d])
+            split_bboxs = np.unique(np.array(split_bboxs), axis=0) # drop repeat bbox
+            
+            for split_bbox in split_bboxs:
+                split_bbox = self.rect_box(split_bbox, imgwidth, imgheight)
+                left, up, right, down = int(split_bbox[0]), int(split_bbox[1]), int(split_bbox[2]), int(split_bbox[3])
+                left, up, right, down = max(left, 0), max(up, 0), min(right, imgwidth - 1), min(down, imgheight - 1)
+                assert left >= 0 and up >= 0 and right < imgwidth and down < imgheight, print(split_bbox)
+                coordinates = left, up, right, down
+
+                # save images
+                # group_img = cv2.resize(copy.deepcopy(resizeimg[up: down, left: right]), (self.output_width, self.output_height), interpolation=cv2.INTER_CUBIC)
+                subimgname = outbasename + '__' + str(left) + '__' + str(up) + '__' + str(right) + '__' + str(down) + self.outext
+                self.savesubimage(resizeimg, subimgname, coordinates)
+                # split annotations according to annotation mode
+                if self.annomode == 'person':
+                    newobjlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+                elif self.annomode == 'vehicle':
+                    newobjlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
+
+                subimageannos[subimgname] = {
+                    "image size": {
+                        "height": down - up + 1,
+                        "width": right - left + 1,
+                    },
+                    "objects list": newobjlist,
+                }
         return subimageannos
     
-    def merge_and_rect_boxes(self, bboxes_list, imgwidth, imgheight, merge_thres=0.):
-        boxes = {idx: self.rect_box(box, imgwidth, imgheight) for idx, box in enumerate(bboxes_list)}
+    def personAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        newobjlist = []
+        for object_dict in objlist:
+            objcate = object_dict['category']
+            if objcate == 'person':
+                pose = object_dict['pose']
+                riding = object_dict['riding type']
+                age = object_dict['age']
+                fullrect = object_dict['rects']['full body']
+                visiblerect = object_dict['rects']['visible body']
+                headrect = object_dict['rects']['head']
+                
+                # only keep label which box satisfy the requirement
+                rects = {}
+                if self.judgeRect(fullrect, imgwidth, imgheight, coordinates, thresh=0.8):
+                    rects["full body"] = self.restrainRect(fullrect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(visiblerect, imgwidth, imgheight, coordinates, thresh=0.3):
+                    rects["visible body"] = self.restrainRect(visiblerect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(headrect, imgwidth, imgheight, coordinates, thresh=0.8):
+                    rects["head"] = self.restrainRect(headrect, imgwidth, imgheight, coordinates)
+                if rects:
+                    newobjlist.append({
+                        "category": objcate,
+                        "pose": pose,
+                        "riding type": riding,
+                        "age": age,
+                        "rects": rects,
+                    })
+            else:
+                rect = object_dict['rect']
+                if self.judgeRect(rect, imgwidth, imgheight, coordinates, thresh=0.8):
+                    newobjlist.append({
+                        "category": objcate,
+                        "rect": self.restrainRect(rect, imgwidth, imgheight, coordinates)
+                    })
+        return newobjlist
+
+    def vehicleAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        newobjlist = []
+        for object_dict in objlist:
+            objcate = object_dict['category']
+            rect = object_dict['rect']
+            if self.judgeRect(rect, imgwidth, imgheight, coordinates, thresh=0.8):
+                newobjlist.append({
+                    "category": objcate,
+                    "rect": self.restrainRect(rect, imgwidth, imgheight, coordinates)
+                })
+        return newobjlist
+    
+    def judgeRect(self, rectdict, imgwidth, imgheight, coordinates, thresh=None):
+        left, up, right, down = coordinates
+        xmin = int(rectdict['tl']['x'] * imgwidth)
+        ymin = int(rectdict['tl']['y'] * imgheight)
+        xmax = int(rectdict['br']['x'] * imgwidth)
+        ymax = int(rectdict['br']['y'] * imgheight)
+        square = (xmax - xmin) * (ymax - ymin)
+
+        # rect too small
+        if xmax - xmin + 1 < self.filter_size * (right - left) / self.output_width or ymax - ymin + 1 < self.filter_size * (down - up) / self.output_height:
+            print('Ignore too small bbox.', coordinates, [xmin, ymin, xmax, ymax])
+            return False
+
+        if (xmax <= left or right <= xmin) and (ymax <= up or down <= ymin):
+            intersection = 0
+        else:
+            lens = min(xmax, right) - max(xmin, left)
+            wide = min(ymax, down) - max(ymin, up)
+            intersection = lens * wide
+        return intersection and intersection / (square + 1e-5) >= (thresh or self.thresh)
+    
+    def merge_boxes(self, bboxes_list, imgwidth, imgheight, merge_thres=0.):
+        boxes = {idx: box for idx, box in enumerate(bboxes_list)}
         # merge overlap boxes
         trans = True
         while trans:
@@ -462,7 +605,7 @@ class DetectionModelImgSplit(ImgSplit):
             while len(boxes):
                 idx, box = boxes.popitem()
                 _box = max(box[0] - self.gap, 0), max(box[1] - self.gap, 0), min(box[2] + self.gap, imgwidth - 1), min(box[3] + self.gap, imgheight - 1), box[4]
-                merge_bi = [i for i, j in boxes.items() if self.get_iou(_box[:5], j[:5]) > merge_thres]
+                merge_bi = [i for i, j in boxes.items() if fixIoU(_box[:5], j[:5]) > merge_thres]
                 if len(merge_bi) != 0:
                     trans = True
                     merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(box)]) # add box, not _box
@@ -470,54 +613,15 @@ class DetectionModelImgSplit(ImgSplit):
                     xmax, ymax = np.amax(merge_boxes[:, 2]), np.amax(merge_boxes[:, 3])
                     score_max = np.amax(merge_boxes[:, 4])
                     box = [xmin, ymin, xmax, ymax, score_max]
-                    box = self.rect_box(box, imgwidth, imgheight)
                     while len(merge_bi): boxes.pop(merge_bi.pop())
                 newboxes[idx] = box
             boxes = newboxes
         return np.array(list(boxes.values()))
-    
-    def get_iou(self, bb1, bb2):
-        """
-        Calculate the Intersection over Union (IoU) of two bounding boxes.
-
-        Parameters
-        ----------
-        bb1 : set
-            Keys: ('x1', 'y1', 'x2', 'y2')
-            The (x1, y1) position is at the top left corner,
-            the (x2, y2) position is at the bottom right corner
-        bb2 : set
-            Keys: ('x1', 'y1', 'x2', 'y2')
-
-        Returns
-        -------
-        float
-            in [0, 1]
-        """
-        assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
-        assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
-
-        # determine the coordinates of the intersection rectangle
-        x_left = max(bb1[0], bb2[0])
-        y_top = max(bb1[1], bb2[1])
-        x_right = min(bb1[2], bb2[2])
-        y_bottom = min(bb1[3], bb2[3])
-        if x_right < x_left or y_bottom < y_top:
-            return 0.0
-        # The intersection of two axis-aligned bounding boxes is always an
-        # axis-aligned bounding box
-        intersection_area = (x_right - x_left) * (y_bottom - y_top)
-        # compute the area of both AABBs
-        bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
-        bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
-        # compute the intersection over union by taking the intersection
-        # area and dividing it by the sum of prediction + ground-truth
-        # areas - the interesection area
-        iou = intersection_area / float(bb1_area + bb2_area - intersection_area)
-        assert iou >= 0.0 and iou <= 1.0
-        return iou
 
     def rect_box(slef, box, imgwidth, imgheight):
+        assert box[0] >= 0 and box[1] < imgwidth, print(box)
+        assert box[2] >= 0 and box[3] < imgheight, print(box)
+
         box_w, box_h = box[2] - box[0], box[3] - box[1]
         box_wh = max(box_w, box_h)
         box_w_change = (box_wh - box_w) / 2
@@ -544,6 +648,7 @@ class DetectionModelImgSplit(ImgSplit):
             box[3] += box_h_change
         return box
 
+
 class ScaleModelImgSplit(ImgSplit):
     def __init__(self,
                  basepath,
@@ -554,7 +659,7 @@ class ScaleModelImgSplit(ImgSplit):
                  code='utf-8',
                  subwidth=2048,
                  subheight=1024,
-                 thresh=0.1,
+                 thresh=0.4,
                  gap=5,
                  outext='.jpg',
                  imagepath='image_train',
@@ -643,11 +748,13 @@ class ScaleModelImgSplit(ImgSplit):
                         newobjlist = self.personGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
                     elif self.annomode == 'vehicle group':
                         newobjlist = self.vehicleGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
+                    elif self.annomode == 'group':
+                        newobjlist = self.groupAnnoSplit(objlist, sswidth, ssheight, coordinates)
                     
                     # # draw boxes
                     # total_imgpath  = os.path.join(self.out_total_imgpath, subimgname.replace('/', '_'))
                     # totalimg = copy.deepcopy(ssimg[up: down, left: right])
-                    # from panda_utils import get_color
+                    # from .panda_utils import get_color
                     # for l, objdict in enumerate(newobjlist):
                     #     objdict = objdict['rect']
                     #     _w, _h = self.subwidth, self.subheight
@@ -690,19 +797,81 @@ class ScaleModelImgSplit(ImgSplit):
             })
         return newobjlist
     
+    def groupAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        objlist = self.annoSplit(objlist, imgwidth, imgheight, coordinates)
+        _L_ = ['motorcycle', 'midsize car', 'bicycle', 'tricycle', 'small car', 'vehicles', 'baby carriage', 'large car', 'electric car'] \
+            + ['person', 'crowd', 'people']
+        objmodelist = [obj for obj in objlist if obj['category'] in _L_]
+
+        newobjlist = []
+        for rect in self.merge_boxes(objmodelist, imgwidth, imgheight):
+            newobjlist.append({
+                "category": 'group',
+                "rect": rect
+            })
+        return newobjlist
+
+    def annoSplit(self, objlist, imgwidth, imgheight, coordinates):
+        newobjlist = []
+        for object_dict in objlist:
+            objcate = object_dict['category']
+            if objcate == 'person':
+                pose = object_dict['pose']
+                riding = object_dict['riding type']
+                age = object_dict['age']
+                fullrect = object_dict['rects']['full body']
+                visiblerect = object_dict['rects']['visible body']
+                headrect = object_dict['rects']['head']
+                # only keep label which box satisfy the requirement
+                rects = {}
+                if self.judgeRect(fullrect, imgwidth, imgheight, coordinates):
+                    rects["full body"] = self.restrainRect(fullrect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(visiblerect, imgwidth, imgheight, coordinates):
+                    rects["visible body"] = self.restrainRect(visiblerect, imgwidth, imgheight, coordinates)
+                if self.judgeRect(headrect, imgwidth, imgheight, coordinates):
+                    rects["head"] = self.restrainRect(headrect, imgwidth, imgheight, coordinates)
+                if rects:
+                    newobjlist.append({
+                        "category": objcate,
+                        "pose": pose,
+                        "riding type": riding,
+                        "age": age,
+                        "rects": rects,
+                    })
+            else:
+                rect = object_dict['rect']
+                if self.judgeRect(rect, imgwidth, imgheight, coordinates):
+                    newobjlist.append({
+                        "category": objcate,
+                        "rect": self.restrainRect(rect, imgwidth, imgheight, coordinates)
+                    })
+        return newobjlist
+
     def merge_boxes(self, objlist, imgwidth, imgheight):
         # find all boxes
         boxes = {}
         for idx, object_dict in enumerate(objlist):
-            rectdict = object_dict['rects']['full body'] if object_dict['category'] == 'person' else object_dict['rect']
-            xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
-            xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
-            if xmin >= xmax or ymin >= ymax:
+            if object_dict['category'] == 'person':
+                xmin, ymin, xmax, ymax = None, None, None, None
+                for _, v in object_dict['rects'].items():
+                    xmin = min(xmin, v['tl']['x']) if xmin is not None else v['tl']['x']
+                    ymin = min(ymin, v['tl']['y']) if ymin is not None else v['tl']['y']
+                    xmax = max(xmax, v['br']['x']) if xmax is not None else v['br']['x']
+                    ymax = max(ymax, v['br']['y']) if ymax is not None else v['br']['y']
+                xmin, ymin = max(int(xmin * imgwidth), 0), max(int(ymin * imgheight), 0)
+                xmax, ymax = min(int(xmax * imgwidth), imgwidth - 1), min(int(ymax * imgheight), imgheight - 1)
+            else:
+                rectdict = object_dict['rect']
+                xmin, ymin = max(int(rectdict['tl']['x'] * imgwidth), 0), max(int(rectdict['tl']['y'] * imgheight), 0)
+                xmax, ymax = min(int(rectdict['br']['x'] * imgwidth), imgwidth - 1), min(int(rectdict['br']['y'] * imgheight), imgheight - 1)
+
+            if None in [xmin, ymin, xmax, ymax] or xmin >= xmax or ymin >= ymax:
                 print('object label error:', xmin, ymin, xmax, ymax)
                 print(objdict)
                 continue
-            box = xmin, ymin, xmax, ymax
-            boxes[idx] = box
+
+            boxes[idx] = [xmin, ymin, xmax, ymax]
+
         # merge overlap boxes
         trans = True
         while trans:
@@ -711,7 +880,7 @@ class ScaleModelImgSplit(ImgSplit):
             while len(boxes):
                 idx, box = boxes.popitem()
                 _box = max(box[0] - self.gap, 0), max(box[1] - self.gap, 0), min(box[2] + self.gap, imgwidth - 1), min(box[3] + self.gap, imgheight - 1)
-                merge_bi = [i for i, j in boxes.items() if self.get_iou(_box, j) > 0.]
+                merge_bi = [i for i, j in boxes.items() if fixIoU(_box, j) > 0.]
                 if len(merge_bi) != 0:
                     trans = True
                     merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(box)]) # add box, not _box
@@ -721,49 +890,9 @@ class ScaleModelImgSplit(ImgSplit):
                     while len(merge_bi): boxes.pop(merge_bi.pop())
                 newboxes[idx] = box
             boxes = newboxes
+
         for _, rect in boxes.items():
             yield self.restrainRectByBox(rect, imgwidth, imgheight)
-
-    def get_iou(self, bb1, bb2):
-        """
-        Calculate the Intersection over Union (IoU) of two bounding boxes.
-
-        Parameters
-        ----------
-        bb1 : set
-            Keys: ('x1', 'y1', 'x2', 'y2')
-            The (x1, y1) position is at the top left corner,
-            the (x2, y2) position is at the bottom right corner
-        bb2 : set
-            Keys: ('x1', 'y1', 'x2', 'y2')
-
-        Returns
-        -------
-        float
-            in [0, 1]
-        """
-        assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
-        assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
-
-        # determine the coordinates of the intersection rectangle
-        x_left = max(bb1[0], bb2[0])
-        y_top = max(bb1[1], bb2[1])
-        x_right = min(bb1[2], bb2[2])
-        y_bottom = min(bb1[3], bb2[3])
-        if x_right < x_left or y_bottom < y_top:
-            return 0.0
-        # The intersection of two axis-aligned bounding boxes is always an
-        # axis-aligned bounding box
-        intersection_area = (x_right - x_left) * (y_bottom - y_top)
-        # compute the area of both AABBs
-        bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
-        bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
-        # compute the intersection over union by taking the intersection
-        # area and dividing it by the sum of prediction + ground-truth
-        # areas - the interesection area
-        iou = intersection_area / float(bb1_area + bb2_area - intersection_area)
-        assert iou >= 0.0 and iou <= 1.0
-        return iou
 
     def restrainRectByBox(self, rect, imgwidth, imgheight):
         xmin, ymin = int(rect[0]), int(rect[1])
@@ -771,10 +900,50 @@ class ScaleModelImgSplit(ImgSplit):
         return {
             'tl': {
                 'x': xmin / imgwidth,
-                'y': ymin / imgheight
+                'y': ymin / imgheight,
             },
             'br': {
                 'x': xmax / imgwidth,
-                'y': ymax / imgheight
+                'y': ymax / imgheight,
             }
         }
+
+
+def fixIoU(bb1, bb2):
+    """
+    Calculate the fix Intersection over Union (IoU) of two bounding boxes.
+    
+    fixiou = intersection_area / min(bb1_area, bb2_area)
+
+    Parameters
+    ----------
+    bb1 : set
+        Keys: ('x1', 'y1', 'x2', 'y2')
+        The (x1, y1) position is at the top left corner,
+        the (x2, y2) position is at the bottom right corner
+    bb2 : set
+        Keys: ('x1', 'y1', 'x2', 'y2')
+
+    Returns
+    -------
+    float
+        in [0, 1]
+    """
+    assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
+    assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
+
+    # determine the coordinates of the intersection rectangle
+    x_left = max(bb1[0], bb2[0]);  y_top = max(bb1[1], bb2[1])
+    x_right = min(bb1[2], bb2[2]); y_bottom = min(bb1[3], bb2[3])
+    if x_right < x_left or y_bottom < y_top: return 0.0
+
+    # The intersection of two axis-aligned bounding boxes is always an
+    # axis-aligned bounding box
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    # compute the area of both AABBs
+    bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
+    bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
+    # compute the fix intersection over union by taking the intersection
+    fixiou = intersection_area / min(bb1_area, bb2_area)
+    assert fixiou >= 0.0 and fixiou <= 1.0
+    return fixiou
