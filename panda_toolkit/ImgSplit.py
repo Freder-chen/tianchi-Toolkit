@@ -303,7 +303,7 @@ class ImgSplit():
         for object_dict in objlist:
             objcate = object_dict['category']
             rect = object_dict['rect']
-            if self.judgeRect(rect, imgwidth, imgheight, coordinates, thresh=0.3):
+            if self.judgeRect(rect, imgwidth, imgheight, coordinates):
                 newobjlist.append({
                     "category": objcate,
                     "rect": self.restrainRect(rect, imgwidth, imgheight, coordinates)
@@ -342,7 +342,6 @@ class ImgSplit():
         except Exception:
             print(coordinates)
             raise
-
 
 
 class DetectionModelImgSplit(ImgSplit):
@@ -472,8 +471,8 @@ class DetectionModelImgSplit(ImgSplit):
                 split_width = int(self.output_width * split_scale)
                 split_height = int(self.output_height * split_scale)
                 if right - left + 1 > split_width * (1 + self.split_gap) and down - up + 1 > split_height * (1 + self.split_gap):
-                    for l in range(left, right, int(split_width * self.split_gap)):
-                        for u in range(up, down, int(split_height * self.split_gap)):
+                    for l in range(left, right, int(split_width * (1 - self.split_gap))):
+                        for u in range(up, down, int(split_height * (1 - self.split_gap))):
                             if l + split_width - 1 > imgwidth - 1: # limit when point exceeds img
                                 r = right; l = right - split_width + 1
                             else:
@@ -484,14 +483,14 @@ class DetectionModelImgSplit(ImgSplit):
                                 d = u + split_height - 1
                             split_bboxs.append([l, u, r, d])
                 elif right - left + 1 > split_width * (1 + self.split_gap):
-                    for l in range(left, right, int(split_width * self.split_gap)):
+                    for l in range(left, right, int(split_width * (1 - self.split_gap))):
                         if l + split_width - 1 > imgwidth - 1:
                             r = right; l = right - split_width + 1
                         else:
                             r = l + split_width - 1
                         split_bboxs.append([l, up, r, down])
                 elif down - up + 1 > split_height * (1 + self.split_gap):
-                    for u in range(up, down, int(split_height * self.split_gap)):
+                    for u in range(up, down, int(split_height * (1 - self.split_gap))):
                         if u + split_height - 1 > imgheight - 1:
                             d = down; u = down - split_height + 1
                         else:
@@ -749,7 +748,9 @@ class ScaleModelImgSplit(ImgSplit):
                     elif self.annomode == 'vehicle group':
                         newobjlist = self.vehicleGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
                     elif self.annomode == 'group':
-                        newobjlist = self.groupAnnoSplit(objlist, sswidth, ssheight, coordinates)
+                        # newobjlist = self.groupAnnoSplit(objlist, sswidth, ssheight, coordinates)
+                        newobjlist = self.personGroupAnnoSplit(objlist, sswidth, ssheight, coordinates) \
+                                   + self.vehicleGroupAnnoSplit(objlist, sswidth, ssheight, coordinates)
                     
                     # # draw boxes
                     # total_imgpath  = os.path.join(self.out_total_imgpath, subimgname.replace('/', '_'))
@@ -773,8 +774,8 @@ class ScaleModelImgSplit(ImgSplit):
         return subimageannos
     
     def personGroupAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
-        objlist = self.personAnnoSplit(objlist, imgwidth, imgheight, coordinates)
         objmodelist = [obj for obj in objlist if obj['category'] in ['person', 'crowd', 'people']]
+        objmodelist = self.personAnnoSplit(objmodelist, imgwidth, imgheight, coordinates)
         
         newobjlist = []
         for rect in self.merge_boxes(objmodelist, imgwidth, imgheight):
@@ -785,9 +786,9 @@ class ScaleModelImgSplit(ImgSplit):
         return newobjlist
     
     def vehicleGroupAnnoSplit(self, objlist, imgwidth, imgheight, coordinates):
-        objlist = self.vehicleAnnoSplit(objlist, imgwidth, imgheight, coordinates)
         _L_ = ['motorcycle', 'midsize car', 'bicycle', 'tricycle', 'small car', 'vehicles', 'baby carriage', 'large car', 'electric car']
         objmodelist = [obj for obj in objlist if obj['category'] in _L_]
+        objmodelist = self.vehicleAnnoSplit(objmodelist, imgwidth, imgheight, coordinates)
 
         newobjlist = []
         for rect in self.merge_boxes(objmodelist, imgwidth, imgheight):

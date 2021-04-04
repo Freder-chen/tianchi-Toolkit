@@ -726,7 +726,8 @@ def generate_coco_anno_vehicle_group(vgroupsrcfile, tgtfile, keywords=None):
 def generate_coco_anno_group(vgroupsrcfile, tgtfile, keywords=None):
     attrDict = dict()
     attrDict["categories"] = [
-        {"supercategory": "none", "id": 7, "name": 'group'}
+        {"supercategory": "none", "id": 5, "name": 'person group'},
+        {"supercategory": "none", "id": 6, "name": 'vehicle group'}
     ]
     with open(vgroupsrcfile, 'r') as load_f:
         group_anno_dict = json.load(load_f)
@@ -757,7 +758,7 @@ def generate_coco_anno_group(vgroupsrcfile, tgtfile, keywords=None):
 
         for objdict in imagedict['objects list']:
             cate = objdict['category']
-            if cate in ['group']:
+            if cate in ['person group', 'vehicle group']:
                 annotation = dict()
                 rect = objdict['rect']
                 annotation["image_id"] = imgid
@@ -766,7 +767,7 @@ def generate_coco_anno_group(vgroupsrcfile, tgtfile, keywords=None):
                 x, y, w, h = RectDict2List(rect, imgwidth, imgheight, scale=1, mode='tlwh')
                 annotation["bbox"] = [x, y, w, h]
                 annotation["area"] = float(w * h)
-                annotation["category_id"] = CATEGORY['group']
+                annotation["category_id"] = CATEGORY[cate]
                 annotation["id"] = objid
                 objid += 1
                 annotation["segmentation"] = [[x, y, x, (y + h), (x + w), (y + h), (x + w), y]]

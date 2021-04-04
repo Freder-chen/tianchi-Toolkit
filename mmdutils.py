@@ -110,10 +110,13 @@ def show(full_img,
         score_thres=0.):
     # show the detection result and save it
     # load full image
+    import copy
     if isinstance(det_bboxes, list):
         det_bboxes = np.array(det_bboxes)
     if isinstance(det_labels, list):
         det_labels = np.array(det_labels)
+    det_bboxes = copy.deepcopy(det_bboxes)
+    det_labels = copy.deepcopy(det_labels)
 
     full_height, full_width = full_img.shape[:2]
     full_img = mmcv.imresize(full_img, (int(full_width * show_scale), int(full_height * show_scale)))

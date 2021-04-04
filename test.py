@@ -85,7 +85,7 @@ def test_person_label_range():
 
 # "height": 15052,
 # "width": 26753
-test_person_label_range()
+# test_person_label_range()
 
 
 def test_vehicles_label_range():
@@ -175,3 +175,139 @@ def test_group_model():
     mmdutils.show(img, bboxes_list, labels_list, 'person group', './test.jpg', score_thres=0., show_scale=0.5)
 
 # test_group_model()
+
+def fixIoU(bb1, bb2):
+    """
+    Calculate the fix Intersection over Union (IoU) of two bounding boxes.
+    
+    fixiou = intersection_area / min(bb1_area, bb2_area)
+
+    Parameters
+    ----------
+    bb1 : set
+        Keys: ('x1', 'y1', 'x2', 'y2')
+        The (x1, y1) position is at the top left corner,
+        the (x2, y2) position is at the bottom right corner
+    bb2 : set
+        Keys: ('x1', 'y1', 'x2', 'y2')
+
+    Returns
+    -------
+    float
+        in [0, 1]
+    """
+    assert bb1[0] < bb1[2] and bb1[1] < bb1[3], print(bb1)
+    assert bb2[0] < bb2[2] and bb2[1] < bb2[3], print(bb2)
+
+    # determine the coordinates of the intersection rectangle
+    x_left = max(bb1[0], bb2[0]);  y_top = max(bb1[1], bb2[1])
+    x_right = min(bb1[2], bb2[2]); y_bottom = min(bb1[3], bb2[3])
+    if x_right < x_left or y_bottom < y_top: return 0.0
+
+    # The intersection of two axis-aligned bounding boxes is always an
+    # axis-aligned bounding box
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    # compute the area of both AABBs
+    bb1_area = (bb1[2] - bb1[0]) * (bb1[3] - bb1[1])
+    bb2_area = (bb2[2] - bb2[0]) * (bb2[3] - bb2[1])
+    # compute the fix intersection over union by taking the intersection
+    fixiou = intersection_area / min(bb1_area, bb2_area)
+    assert fixiou >= 0.0 and fixiou <= 1.0
+    return fixiou
+
+def rect_box(box, imgwidth, imgheight):
+        assert box[0] >= 0 and box[1] < imgwidth, print(box)
+        assert box[2] >= 0 and box[3] < imgheight, print(box)
+
+        box_w, box_h = box[2] - box[0], box[3] - box[1]
+        box_wh = max(box_w / 2, box_h)
+        box_w_change = (box_wh * 2 - box_w) / 2
+        box_h_change = (box_wh - box_h) / 2
+
+        if box[0] - box_w_change < 0:
+            box[0] = 0
+            box[2] = box_wh
+        elif box[2] + box_w_change > imgwidth - 1:
+            box[2] = imgwidth - 1
+            box[0] = imgwidth - 1 - box_wh
+        else:
+            box[0] -= box_w_change
+            box[2] += box_w_change
+        
+        if box[1] - box_h_change < 0:
+            box[1] = 0
+            box[3] = box_wh
+        elif box[3] + box_h_change > imgheight - 1:
+            box[3] = imgheight - 1
+            box[1] = imgheight - 1 - box_wh
+        else:
+            box[1] -= box_h_change
+            box[3] += box_h_change
+        return box
+
+def merge_boxes(bboxes_list, imgwidth, imgheight, merge_thres=0.):
+    boxes = {idx: box for idx, box in enumerate(bboxes_list)}
+    # merge overlap boxes
+    gap = 0
+    trans = True
+    while trans:
+        trans = False
+        newboxes = {}
+        while len(boxes):
+            idx, box = boxes.popitem()
+            _box = max(box[0] - gap, 0), max(box[1] - gap, 0), min(box[2] + gap, imgwidth - 1), min(box[3] + gap, imgheight - 1), box[4]
+            merge_bi = [i for i, j in boxes.items() if fixIoU(_box[:5], j[:5]) > merge_thres]
+            if len(merge_bi) != 0:
+                trans = True
+                merge_boxes = np.array([list(boxes[i]) for i in merge_bi] + [list(box)]) # add box, not _box
+                xmin, ymin = np.amin(merge_boxes[:, 0]), np.amin(merge_boxes[:, 1])
+                xmax, ymax = np.amax(merge_boxes[:, 2]), np.amax(merge_boxes[:, 3])
+                score_max = np.amax(merge_boxes[:, 4])
+                box = [xmin, ymin, xmax, ymax, score_max]
+                while len(merge_bi): boxes.pop(merge_bi.pop())
+            newboxes[idx] = box
+        boxes = newboxes
+    return np.array(list(boxes.values()))
+
+def regroup():
+    import mmdutils
+
+    cfg_filename = '/home/ubuntu/public/Dataset/baseline/mmdetection-master/yhz/group/cascade_rcnn_r50_fpn_1x_coco.py'
+    model_filename = '/home/ubuntu/public/Dataset/baseline/mmdetection-master/yhz/group/epoch_20.pth'
+    # img_filename = '/home/ubuntu/Developer/PANDA-Toolkit/dataset/train_A/image_train/01_University_Canteen/IMG_01_03.jpg'
+    img_filename = '/home/ubuntu/Developer/PANDA-Toolkit/dataset/test_A/image_test/14_OCT_Habour/IMG_14_03.jpg'
+    _, model = mmdutils.detector_prepare(cfg_filename, model_filename)
+
+    img = cv2.imread(img_filename)
+    imgheight, imgwidth = img.shape[:2]
+
+    bboxes_list, _ = mmdutils.det(img, model, 2048, 1024, score_thres=0.1)
+    
+    bboxes_list = merge_boxes(bboxes_list, imgwidth, imgheight, merge_thres=0.5)
+    labels_list = [0] * len(bboxes_list)
+    mmdutils.show(img, bboxes_list, labels_list, 'group', './test.jpg', score_thres=0.)
+
+    # if bbox too large:
+        # subimg = img[,] # for
+
+    new_bboxes_list = []
+    for bbox in bboxes_list:
+        rect_bbox = rect_box(bbox, imgwidth, imgheight)
+        subimg = img[int(rect_bbox[1]): int(rect_bbox[3]), int(rect_bbox[0]): int(rect_bbox[2])]
+        bl, _ = mmdutils.det(subimg, model, 2048, 1024, score_thres=0.1)
+        for b in bl:
+            new_bboxes_list.append([b[0] + rect_bbox[0], b[1] + rect_bbox[1], b[2] + rect_bbox[0], b[3] + rect_bbox[1], b[4]])
+        # new_bboxes_list.append(rect_bbox)
+        # new_bboxes_list += bl
+
+    bboxes_list = np.array(new_bboxes_list)
+    labels_list = [0] * len(bboxes_list)
+    print(bboxes_list.shape)
+    mmdutils.show(img, bboxes_list, labels_list, 'group', './test1.jpg', score_thres=0.)
+    
+    bboxes_list = merge_boxes(bboxes_list, imgwidth, imgheight, merge_thres=0.5)
+    labels_list = [0] * len(bboxes_list)
+    mmdutils.show(img, bboxes_list, labels_list, 'group', './test2.jpg', score_thres=0.)
+
+
+regroup()
